@@ -28,3 +28,12 @@ def main : IO Unit := do
       out := out ++ s!"theorem t{i} : ({a} * {b}) % {p} = {c} := rfl\n"
     IO.FS.writeFile s!"scratch/bench/MulModW{bits}.lean" out
     IO.println s!"wrote MulModW{bits}.lean ({n} lemmas, {nlimb} limbs)"
+  -- Quotient check on the kernel path: A / B = Q := rfl with a multi-limb divisor.
+  let mut dv := "set_option maxRecDepth 1000000\n"
+  for i in [0:200] do
+    let a := mkNum (i * 11 + 1) 16   -- 16-limb dividend
+    let b := mkNum (i * 11 + 7) 6    -- 6-limb divisor
+    dv := dv ++ s!"theorem d{i} : {a} / {b} = {a / b} := rfl\n"
+    dv := dv ++ s!"theorem r{i} : {a} % {b} = {a % b} := rfl\n"
+  IO.FS.writeFile "scratch/bench/DivCheck.lean" dv
+  IO.println "wrote DivCheck.lean (200 div + 200 mod lemmas, 16/6 limbs)"
