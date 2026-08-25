@@ -273,17 +273,42 @@ def divmodLE : List (BitVec 64) → BitVec 64 → List (BitVec 64) × BitVec 64
 
 Each `*Impl` runs the verified limb path; each `verifiedNat*` has the plain `Nat`
 operation as its logical body and the `*Impl` as its `@[implemented_by]` compiled
-body. -/
+body.
 
-def verifiedNatAddImpl (a b : Nat) : Nat := bignumVal (add (ofNat a) (ofNat b))
-def verifiedNatSubImpl (a b : Nat) : Nat := bignumVal (bnSub (ofNat a) (ofNat b))
-def verifiedNatMulImpl (a b : Nat) : Nat := bignumVal (mulDispatch (ofNat a) (ofNat b))
+### Single-word gate
+
+A `Nat` below `2 ^ 64` is one machine word; Lean's runtime keeps it as an
+unboxed immediate and `lean_nat_*` runs word arithmetic without entering GMP's
+multi-limb `mpz` code. For single-word operands the verified limb path replaces
+no GMP arithmetic and only adds decode/encode work, so each binary `*Impl` gates
+on the operand size and defers to the native `Nat` operation below one limb; the
+verified path runs exactly where GMP's multi-limb code would. The gate branch is
+the native operation, which is the `verifiedNat*` logical body, so the routing
+stays value-correct. -/
+
+/-- One machine word: `2 ^ 64`. -/
+@[inline] def oneLimb : Nat := 18446744073709551616
+
+/-- Both operands fit in one machine word (native `Nat` op stays out of GMP). -/
+@[inline] def bothWord (a b : Nat) : Bool := a < oneLimb && b < oneLimb
+
+def verifiedNatAddImpl (a b : Nat) : Nat :=
+  if bothWord a b then a + b else bignumVal (add (ofNat a) (ofNat b))
+def verifiedNatSubImpl (a b : Nat) : Nat :=
+  if bothWord a b then a - b else bignumVal (bnSub (ofNat a) (ofNat b))
+def verifiedNatMulImpl (a b : Nat) : Nat :=
+  if bothWord a b then a * b else bignumVal (mulDispatch (ofNat a) (ofNat b))
 def verifiedNatPowImpl (a b : Nat) : Nat := bignumVal (powLimbs (ofNat a) b (ofNat 1))
-def verifiedNatShiftLeftImpl (a b : Nat) : Nat := bignumVal (shl (ofNat a) b)
-def verifiedNatShiftRightImpl (a b : Nat) : Nat := bignumVal (shr (ofNat a) b)
-def verifiedNatLandImpl (a b : Nat) : Nat := bignumVal (land (ofNat a) (ofNat b))
-def verifiedNatLorImpl (a b : Nat) : Nat := bignumVal (lor (ofNat a) (ofNat b))
-def verifiedNatXorImpl (a b : Nat) : Nat := bignumVal (xorLimbs (ofNat a) (ofNat b))
+def verifiedNatShiftLeftImpl (a b : Nat) : Nat :=
+  if a < oneLimb then a <<< b else bignumVal (shl (ofNat a) b)
+def verifiedNatShiftRightImpl (a b : Nat) : Nat :=
+  if a < oneLimb then a >>> b else bignumVal (shr (ofNat a) b)
+def verifiedNatLandImpl (a b : Nat) : Nat :=
+  if bothWord a b then a &&& b else bignumVal (land (ofNat a) (ofNat b))
+def verifiedNatLorImpl (a b : Nat) : Nat :=
+  if bothWord a b then a ||| b else bignumVal (lor (ofNat a) (ofNat b))
+def verifiedNatXorImpl (a b : Nat) : Nat :=
+  if bothWord a b then a ^^^ b else bignumVal (xorLimbs (ofNat a) (ofNat b))
 
 /-- Quotient. For a single-limb divisor (`b < 2 ^ 64`) the limb-native
     `divmodLE` computes the quotient digits; for a multi-limb divisor there is no
@@ -311,15 +336,18 @@ def gcdImplAux : Nat → Nat → Nat → Nat
 
 /-- Greatest common divisor via the Euclidean algorithm over the routed
     remainder. Mirrors `Nat.gcd a b = if a = 0 then b else Nat.gcd (b % a) a`. -/
-def verifiedNatGcdImpl (a b : Nat) : Nat := gcdImplAux (a + 1) a b
+def verifiedNatGcdImpl (a b : Nat) : Nat :=
+  if bothWord a b then Nat.gcd a b else gcdImplAux (a + 1) a b
 
 /-- `a == b` via limb-list equality of the canonical digit expansions. -/
-def verifiedNatBeqImpl (a b : Nat) : Bool := ofNat a == ofNat b
+def verifiedNatBeqImpl (a b : Nat) : Bool :=
+  if bothWord a b then Nat.beq a b else ofNat a == ofNat b
 
 /-- `a ≤ b` via the verified truncating subtraction: `a ≤ b ↔ a - b = 0`, and a
     value of `0` normalizes to the empty limb list. -/
 def verifiedNatBleImpl (a b : Nat) : Bool :=
-  norm (bnSub (ofNat a) (ofNat b)) == ([] : List (BitVec 64))
+  if bothWord a b then Nat.ble a b
+  else norm (bnSub (ofNat a) (ofNat b)) == ([] : List (BitVec 64))
 
 @[implemented_by verifiedNatAddImpl]
 def verifiedNatAdd (a b : Nat) : Nat := a + b
