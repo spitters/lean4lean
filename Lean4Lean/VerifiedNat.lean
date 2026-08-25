@@ -31,13 +31,11 @@ specification against `bignumVal` (the abstraction function `toNat`):
 `pow` (square-and-multiply over the Karatsuba multiply), `beq` and `ble` (via the
 verified subtraction) are composed from those kernels here. `div` and `mod` use
 the single-limb long-division kernel `divmodLE` (a `128 / 64 → 64` window per
-limb) for a divisor below `2 ^ 64`, and fall back to the stock `Nat` operation
-for a multi-limb divisor (limb-native Knuth-D division is not vendored here).
-`gcd` is the Euclidean algorithm over the routed `mod`.
+limb) for a divisor below `2 ^ 64`, and Knuth Algorithm D (`divModLimbs`) for a
+multi-limb divisor. `gcd` is the Euclidean algorithm over the routed `mod`.
 
 Coverage: add, sub, mul (Karatsuba dispatch), pow, shiftLeft, shiftRight, land,
-lor, xor, beq, ble, gcd, and div/mod (single-limb divisor) route through verified
-limbs; div/mod with a multi-limb divisor fall back to the stock `Nat` path.
+lor, xor, beq, ble, gcd, div, and mod all route through verified limbs.
 -/
 
 namespace VerifiedNat
@@ -269,6 +267,107 @@ def divmodLE : List (BitVec 64) → BitVec 64 → List (BitVec 64) × BitVec 64
       let d128 : BitVec 128 := BitVec.setWidth 128 d
       (BitVec.setWidth 64 (w / d128) :: qhi, BitVec.setWidth 64 (w % d128))
 
+/-! ### Multi-limb division (Knuth Algorithm D)
+
+Long division of an `(m+n)`-limb dividend by an `n`-limb divisor (`n ≥ 2`),
+little-endian. Normalize so the divisor's top limb has its high bit set; per
+quotient digit estimate `qhat` from the top two dividend limbs by a `128/64`
+hardware division (`BitVec 128` udiv — the same limb-native step as `divmodLE`,
+never a `Nat` big-division), correct it down by at most two, multiply-subtract
+`qhat · v` from the dividend window, and add the divisor back on the rare
+over-estimate. The remainder is the low `n` limbs shifted back by the
+normalization amount. -/
+
+/-- Leading zeros of a nonzero 64-bit word. -/
+def clzWord (x : BitVec 64) : Nat := 63 - Nat.log2 x.toNat
+
+/-- Shift a limb array left by `s` bits (`0 ≤ s < 64`); pushes one carry limb. -/
+def shlBitsA (a : Array (BitVec 64)) (s : Nat) : Array (BitVec 64) := Id.run do
+  if s == 0 then return a.push 0
+  let mut out := Array.emptyWithCapacity (a.size + 1)
+  let mut carry : BitVec 64 := 0
+  for x in a do
+    out := out.push ((x <<< s) ||| carry)
+    carry := x >>> (64 - s)
+  return out.push carry
+
+/-- Shift a limb array right by `s` bits (`0 ≤ s < 64`). -/
+def shrBitsA (a : Array (BitVec 64)) (s : Nat) : Array (BitVec 64) := Id.run do
+  if s == 0 then return a
+  let n := a.size
+  let mut out := Array.replicate n (0 : BitVec 64)
+  for i in [0:n] do
+    let lo := a[i]! >>> s
+    let hi := if i + 1 < n then a[i+1]! <<< (64 - s) else 0
+    out := out.set! i (lo ||| hi)
+  return out
+
+/-- `2 ^ 64` as a 128-bit constant. -/
+def twoPow64_128 : BitVec 128 := (1 : BitVec 128) <<< (64 : Nat)
+
+/-- Little-endian `(quotient, remainder)` of `u / v` by Knuth Algorithm D.
+    Handles `n = 1` by the `divmodLE` window and `u < v` by `(0, u)`. -/
+def divModLimbs (uL vL : List (BitVec 64)) : List (BitVec 64) × List (BitVec 64) := Id.run do
+  let v0 := (norm vL).toArray
+  let u0 := (norm uL).toArray
+  let n := v0.size
+  if n == 0 then return ([], [])
+  if u0.size < n then return ([], norm uL)
+  if n == 1 then
+    let (q, r) := divmodLE (norm uL) v0[0]!
+    return (norm q, norm [r])
+  let m := u0.size - n
+  let s := clzWord v0[n-1]!
+  let v := (shlBitsA v0 s).extract 0 n
+  let mut u := shlBitsA u0 s
+  while u.size < m + n + 1 do u := u.push 0
+  let mut q := Array.replicate (m+1) (0 : BitVec 64)
+  let vHi128 : BitVec 128 := BitVec.setWidth 128 v[n-1]!
+  let vHi2 : BitVec 64 := v[n-2]!
+  for jj in [0:m+1] do
+    let j := m - jj
+    let num128 : BitVec 128 :=
+      (BitVec.setWidth 128 u[j+n]! <<< (64 : Nat)) ||| BitVec.setWidth 128 u[j+n-1]!
+    let mut qhat : BitVec 128 := num128 / vHi128
+    let mut rhat : BitVec 128 := num128 % vHi128
+    for _ in [0:2] do
+      let cond1 := decide (qhat ≥ twoPow64_128)
+      let lhs : BitVec 128 := qhat * BitVec.setWidth 128 vHi2
+      let rhs : BitVec 128 := (rhat <<< (64 : Nat)) ||| BitVec.setWidth 128 u[j+n-2]!
+      let cond2 := decide (rhat < twoPow64_128) && decide (lhs > rhs)
+      if cond1 || cond2 then
+        qhat := qhat - 1
+        rhat := rhat + vHi128
+    let qh : BitVec 64 := BitVec.setWidth 64 qhat
+    let mut carry : BitVec 128 := 0
+    let mut borrow : Nat := 0
+    for i in [0:n] do
+      let p : BitVec 128 := BitVec.setWidth 128 qh * BitVec.setWidth 128 v[i]! + carry
+      carry := p >>> (64 : Nat)
+      let need := (BitVec.setWidth 64 p).toNat + borrow
+      let ui := u[j+i]!.toNat
+      if ui < need then
+        u := u.set! (j+i) (BitVec.ofNat 64 (ui + 18446744073709551616 - need)); borrow := 1
+      else
+        u := u.set! (j+i) (BitVec.ofNat 64 (ui - need)); borrow := 0
+    let need := (BitVec.setWidth 64 carry).toNat + borrow
+    let ut := u[j+n]!.toNat
+    let negBorrow := ut < need
+    u := u.set! (j+n)
+      (BitVec.ofNat 64 ((if negBorrow then ut + 18446744073709551616 else ut) - need))
+    if negBorrow then
+      q := q.set! j (qh - 1)
+      let mut addc : Nat := 0
+      for i in [0:n] do
+        let sum := u[j+i]!.toNat + v[i]!.toNat + addc
+        u := u.set! (j+i) (BitVec.ofNat 64 (sum % 18446744073709551616))
+        addc := if sum ≥ 18446744073709551616 then 1 else 0
+      u := u.set! (j+n) (u[j+n]! + BitVec.ofNat 64 addc)
+    else
+      q := q.set! j qh
+  let rem := shrBitsA (u.extract 0 n) s
+  return (norm q.toList, norm rem.toList)
+
 /-! ## The routed `Nat` operations
 
 Each `*Impl` runs the verified limb path; each `verifiedNat*` has the plain `Nat`
@@ -310,22 +409,21 @@ def verifiedNatLorImpl (a b : Nat) : Nat :=
 def verifiedNatXorImpl (a b : Nat) : Nat :=
   if bothWord a b then a ^^^ b else bignumVal (xorLimbs (ofNat a) (ofNat b))
 
-/-- Quotient. For a single-limb divisor (`b < 2 ^ 64`) the limb-native
-    `divmodLE` computes the quotient digits; for a multi-limb divisor there is no
-    vendored limb kernel (Knuth-D is out of scope), so it falls back to `Nat.div`.
-    `b = 0` returns `0`, matching `Nat.div a 0`. -/
+/-- Quotient. A single-limb divisor (`b < 2 ^ 64`) uses the `divmodLE` window; a
+    multi-limb divisor uses Knuth Algorithm D (`divModLimbs`). Both are
+    limb-native. `b = 0` returns `0`, matching `Nat.div a 0`. -/
 def verifiedNatDivImpl (a b : Nat) : Nat :=
   if b = 0 then 0
   else if b < 2 ^ 64 then bignumVal (divmodLE (ofNat a) (BitVec.ofNat 64 b)).1
-  else a / b
+  else bignumVal (divModLimbs (ofNat a) (ofNat b)).1
 
-/-- Remainder. For a single-limb divisor (`b < 2 ^ 64`) the limb-native
-    `divmodLE` computes the remainder; for a multi-limb divisor it falls back to
-    `Nat.mod`. `b = 0` returns `a`, matching `Nat.mod a 0`. -/
+/-- Remainder. A single-limb divisor (`b < 2 ^ 64`) uses the `divmodLE` window; a
+    multi-limb divisor uses Knuth Algorithm D (`divModLimbs`). Both are
+    limb-native. `b = 0` returns `a`, matching `Nat.mod a 0`. -/
 def verifiedNatModImpl (a b : Nat) : Nat :=
   if b = 0 then a
   else if b < 2 ^ 64 then (divmodLE (ofNat a) (BitVec.ofNat 64 b)).2.toNat
-  else a % b
+  else bignumVal (divModLimbs (ofNat a) (ofNat b)).2
 
 /-- Euclid recursion structured on an explicit fuel bound so it is manifestly
     terminating; `a + 1` steps bound the descent, so the `fuel = 0` case is
