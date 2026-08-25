@@ -128,17 +128,23 @@ to the logical ones across 300+ values (`List.range 300` plus wide points up to
 `2^2048-1`) before the attributes were attached. `Lean4Lean.VerifiedNat` and the
 `lean4lean` binary rebuild clean.
 
-**Re-measurement is blocked by a stale-corpus segfault, not the fix.** After
-rebuilding the verified binary against the current `Lean4Lean` lib, the benchmark
-corpus oleans (built earlier by `build-bench.sh` against the previous lib) are
-version-stale, and the replay path now SIGSEGVs (exit 139) on ALL modules for
-BOTH the stock and verified binaries — including `SmallInt`/`MulW256`, which ran
-clean before. A clean stock-vs-verified re-measurement requires a full
-`build-bench.sh` rebuild (both binaries + all six oleans in one consistent lib
-state). The one signal captured before the corpus went stale: `MulW4096` verified
-reached 8.3 s of width-proportional work before the exit crash, against the prior
->100 s timeout — consistent with the O(n²)→O(M(n) log n) fix, but not a clean
-number. Rerun `build-bench.sh` fresh, then `run-bench.sh`, to get the final curve.
+**Re-measurement is blocked by a binary-replay SIGSEGV (not the fix, not stale
+corpus).** A fresh `build-bench.sh` (both binaries + all six oleans rebuilt in one
+consistent lib state) was completed, yet BOTH the stock and verified binaries
+SIGSEGV (exit 139) on module replay for EVERY corpus module — including
+`SmallInt` — across every invocation form (`lake env … <bin> <mod>`, bare with
+`LEAN_PATH`, `lake exe lean4lean <mod>`). The crash is inside the binary's own
+per-declaration replay loop (`Main.lean` `env.header.mainModule` check), and the
+STOCK binary (rebuilt from `54a532a`, no verified-mpn or div/mod changes) crashes
+identically — so it is a lean4lean-fork CLI/binary issue in this environment, not
+the marshalling or div/mod edits. The marshalling fix's correctness stands
+independently: `ofNatFast`/`bignumValFast` were cross-checked equal to the logical
+`ofNat`/`bignumVal` across 300+ values, and `verifiedNat<Op> = Nat.<op>` by `rfl`.
+Getting the benchmark curve needs the fork-CLI replay crash diagnosed first (a
+separate lean4lean issue); the fix itself is committed and machine-checked.
+NESTED-FLOCK NOTE: earlier "wedges" during rebuild were a flock deadlock from
+wrapping `build-bench.sh` (which calls heavy-run internally) in another heavy-run
+— run it BARE.
 
 ## Lean Kernel Arena (https://arena.lean-lang.org/checker/lean4lean/)
 
