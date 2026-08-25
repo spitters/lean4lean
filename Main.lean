@@ -305,7 +305,12 @@ unsafe def replayFromFresh (module : Name)
     (fuel : Lean4Lean.FuelConfig := {}) : IO Nat := do
   Lean.withImportModules #[module] {} (trustLevel := 0) fun env => do
     let ctx := { newConstants := env.constants.map₁, verbose, compare, checkQuot := false, fuel }
-    Prod.fst <$> replay ctx (.empty module) decl
+    -- `stage₁ := false` is important: while a declaration is being added the
+    -- environment is also held by the replay state, so the constant map is
+    -- shared and a stage-1 SMap would copy+incref the whole map at every insert
+    -- (quadratic, and the mass refcount ops on large-Nat ConstantInfos crash).
+    -- Backport of digama0/lean4lean aaeeb15.
+    Prod.fst <$> replay ctx (.empty module (stage₁ := false)) decl
 
 /-- Read the name of the main module from the `lake-manifest`. -/
 -- This has been copied from `ImportGraph.getCurrentModule` in the
