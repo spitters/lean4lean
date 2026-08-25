@@ -75,9 +75,18 @@ arithmetic ratio is higher (~3.5x at 6 limbs, ~100x at 32 limbs) because GMP's
 multiply is optimized asm and ours is list-based Lean; the end-to-end wall stays
 2-14x because the load+replay floor is shared.
 
+We benchmark the lean4lean *kernel* (proof checker), specifically its
+definitional-reduction `Nat` arithmetic on the `rfl`/`decide` type-checking path
+(`reduceNat` in `whnf`/`isDefEq`). Both binaries are the kernel; only the
+arithmetic backend differs (GMP vs verified limbs). This is not the compiler:
+`native_decide` compiles and runs the check natively and the kernel accepts the
+result under `ofReduceBool`, never calling the reducer -- so the seam does not
+touch it.
+
 Caveats for the trust story: (1) `native_decide` primality proofs bypass the
-kernel reducer entirely (compiled GMP under `ofReduceBool`), so the seam does not
-touch them; the verified path applies only to kernel-checked (`decide`/`rfl`)
-certificates. (2) The modular reduction falls back to GMP for a multi-limb
-divisor, so a cert's reductions are not yet verified -- full verification needs
-the multi-limb Knuth-D division kernel.
+kernel reducer entirely, so the verified path applies only to kernel-checked
+(`decide`/`rfl`) certificates. (2) [CLOSED] The modular reduction now routes a
+multi-limb divisor through Knuth Algorithm D (`divModLimbs`, 128/64 hardware
+qhat, no `Nat` big-division), so div and mod are on the verified path with no GMP
+fallback. Validated by a 1627-case KAT and 6200 kernel-reduced rfl lemmas. Wall
+ratios with the verified mod: 6-limb 2.24x, 9-limb 3.50x, 32-limb 15.78x.
