@@ -29,12 +29,15 @@ specification against `bignumVal` (the abstraction function `toNat`):
 * `toNat_ofNat`    : `bignumVal (ofNat n) = n`
 
 `pow` (square-and-multiply over the Karatsuba multiply), `beq` and `ble` (via the
-verified subtraction) are composed from those kernels here.
+verified subtraction) are composed from those kernels here. `div` and `mod` use
+the single-limb long-division kernel `divmodLE` (a `128 / 64 → 64` window per
+limb) for a divisor below `2 ^ 64`, and fall back to the stock `Nat` operation
+for a multi-limb divisor (limb-native Knuth-D division is not vendored here).
+`gcd` is the Euclidean algorithm over the routed `mod`.
 
 Coverage: add, sub, mul (Karatsuba dispatch), pow, shiftLeft, shiftRight, land,
-lor, xor, beq, ble route through verified limbs. div, mod, gcd remain on the
-stock `Nat` path (their verified kernels use the Knuth-D memref machinery, which
-is not vendored here).
+lor, xor, beq, ble, gcd, and div/mod (single-limb divisor) route through verified
+limbs; div/mod with a multi-limb divisor fall back to the stock `Nat` path.
 -/
 
 namespace VerifiedNat
@@ -251,6 +254,21 @@ def powLimbs (base : List (BitVec 64)) : Nat → List (BitVec 64) → List (BitV
       powLimbs (mulDispatch base base) (e / 2) acc'
 decreasing_by exact Nat.div_lt_self (Nat.succ_pos n) (by decide)
 
+/-- Single-limb long division of a little-endian limb list by one limb `d`,
+    returning the little-endian quotient limbs and the single-limb remainder.
+    The higher limbs are divided first; the returned remainder is folded with the
+    current limb `l` into a `128 / 64 → 64` window (`BitVec 128` `udiv`/`umod`, the
+    hardware `div r/m64` step), so the kernel is limb-native and does not delegate
+    to a `Nat` big-integer division. For `d = 0` the `BitVec` division convention
+    applies; the routed operations exclude that case. -/
+def divmodLE : List (BitVec 64) → BitVec 64 → List (BitVec 64) × BitVec 64
+  | [], _ => ([], 0)
+  | l :: ls, d =>
+      let (qhi, rhi) := divmodLE ls d
+      let w : BitVec 128 := (BitVec.setWidth 128 rhi <<< (64 : Nat)) + BitVec.setWidth 128 l
+      let d128 : BitVec 128 := BitVec.setWidth 128 d
+      (BitVec.setWidth 64 (w / d128) :: qhi, BitVec.setWidth 64 (w % d128))
+
 /-! ## The routed `Nat` operations
 
 Each `*Impl` runs the verified limb path; each `verifiedNat*` has the plain `Nat`
@@ -266,6 +284,34 @@ def verifiedNatShiftRightImpl (a b : Nat) : Nat := bignumVal (shr (ofNat a) b)
 def verifiedNatLandImpl (a b : Nat) : Nat := bignumVal (land (ofNat a) (ofNat b))
 def verifiedNatLorImpl (a b : Nat) : Nat := bignumVal (lor (ofNat a) (ofNat b))
 def verifiedNatXorImpl (a b : Nat) : Nat := bignumVal (xorLimbs (ofNat a) (ofNat b))
+
+/-- Quotient. For a single-limb divisor (`b < 2 ^ 64`) the limb-native
+    `divmodLE` computes the quotient digits; for a multi-limb divisor there is no
+    vendored limb kernel (Knuth-D is out of scope), so it falls back to `Nat.div`.
+    `b = 0` returns `0`, matching `Nat.div a 0`. -/
+def verifiedNatDivImpl (a b : Nat) : Nat :=
+  if b = 0 then 0
+  else if b < 2 ^ 64 then bignumVal (divmodLE (ofNat a) (BitVec.ofNat 64 b)).1
+  else a / b
+
+/-- Remainder. For a single-limb divisor (`b < 2 ^ 64`) the limb-native
+    `divmodLE` computes the remainder; for a multi-limb divisor it falls back to
+    `Nat.mod`. `b = 0` returns `a`, matching `Nat.mod a 0`. -/
+def verifiedNatModImpl (a b : Nat) : Nat :=
+  if b = 0 then a
+  else if b < 2 ^ 64 then (divmodLE (ofNat a) (BitVec.ofNat 64 b)).2.toNat
+  else a % b
+
+/-- Euclid recursion structured on an explicit fuel bound so it is manifestly
+    terminating; `a + 1` steps bound the descent, so the `fuel = 0` case is
+    unreachable. Each step takes the remainder through `verifiedNatModImpl`. -/
+def gcdImplAux : Nat → Nat → Nat → Nat
+  | 0, _, b => b
+  | (fuel + 1), a, b => if a = 0 then b else gcdImplAux fuel (verifiedNatModImpl b a) a
+
+/-- Greatest common divisor via the Euclidean algorithm over the routed
+    remainder. Mirrors `Nat.gcd a b = if a = 0 then b else Nat.gcd (b % a) a`. -/
+def verifiedNatGcdImpl (a b : Nat) : Nat := gcdImplAux (a + 1) a b
 
 /-- `a == b` via limb-list equality of the canonical digit expansions. -/
 def verifiedNatBeqImpl (a b : Nat) : Bool := ofNat a == ofNat b
@@ -302,6 +348,15 @@ def verifiedNatLor (a b : Nat) : Nat := a ||| b
 @[implemented_by verifiedNatXorImpl]
 def verifiedNatXor (a b : Nat) : Nat := a ^^^ b
 
+@[implemented_by verifiedNatDivImpl]
+def verifiedNatDiv (a b : Nat) : Nat := a / b
+
+@[implemented_by verifiedNatModImpl]
+def verifiedNatMod (a b : Nat) : Nat := a % b
+
+@[implemented_by verifiedNatGcdImpl]
+def verifiedNatGcd (a b : Nat) : Nat := Nat.gcd a b
+
 @[implemented_by verifiedNatBeqImpl]
 def verifiedNatBeq (a b : Nat) : Bool := Nat.beq a b
 
@@ -319,6 +374,9 @@ example (a b : Nat) : verifiedNatShiftRight a b = a >>> b := rfl
 example (a b : Nat) : verifiedNatLand a b = a &&& b := rfl
 example (a b : Nat) : verifiedNatLor a b = a ||| b := rfl
 example (a b : Nat) : verifiedNatXor a b = a ^^^ b := rfl
+example (a b : Nat) : verifiedNatDiv a b = a / b := rfl
+example (a b : Nat) : verifiedNatMod a b = a % b := rfl
+example (a b : Nat) : verifiedNatGcd a b = Nat.gcd a b := rfl
 example (a b : Nat) : verifiedNatBeq a b = Nat.beq a b := rfl
 example (a b : Nat) : verifiedNatBle a b = Nat.ble a b := rfl
 
