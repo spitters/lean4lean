@@ -38,5 +38,46 @@ Reading the curve:
   marshalling, compounding it.
 
 Correctness is the headline: the verified kernel accepts exactly the declarations
-GMP accepts across 3830 wide-arithmetic lemmas. The perf gap is a marshalling
-optimization target, not a soundness question.
+GMP accepts across 3830 wide-arithmetic lemmas.
+
+## Where the cost is (profiled, per multiply, `Profile.lean`)
+
+At 256 limbs (16384-bit), one `verifiedNatMulImpl`: `ofNat` decode 230 us,
+`mulDispatch` (Karatsuba) 173,897 us, `bignumVal` encode 177 us. The Nat<->limb
+marshalling is ~0.3% of the cost; the pure-Lean list-based Karatsuba multiply is
+~99.7%. Removing marshalling (native limb literals) would save ~0.3%. The perf
+lever is the multiply representation (`List (BitVec 64)` with per-limb
+allocation), not marshalling.
+
+## Single-word gate
+
+`VerifiedNat` now gates each binary op on `bothWord a b` (both operands < 2^64):
+below one limb the native `Nat` op runs word arithmetic without entering GMP, so
+the verified limb path adds no assurance and only marshalling overhead. Gated:
+SmallInt drops from 1.09x to parity (0.89x); wide widths unchanged.
+
+## Prime-certificate widths (modmul `(A*B) % P = C := rfl`, `gen_modmul.lean`)
+
+The per-step shape of a kernel-checked primality/modexp certificate: a full-width
+multiply then a reduction modulo an n-limb modulus (the `mod` falls back to GMP
+for a multi-limb divisor, so only the multiply is on the verified path).
+
+| prime      | limbs | modmuls | stock | verified | wall ratio |
+|------------|-------|---------|-------|----------|------------|
+| P-384      | 6     | 3000    | 0.56s | 1.22s    | 2.16x      |
+| ~P-521     | 9     | 2000    | 0.46s | 1.44s    | 3.11x      |
+| RSA-2048   | 32    | 800     | 0.34s | 4.84s    | 14.03x     |
+
+All correctness-verified. Curve primes (4-9 limbs) type-check at 2-3x; RSA-2048
+(32 limbs) at 14x. The 51x figure is a 256-limb (16384-bit) number, far beyond any
+prime. Removing the ~0.2-0.3s binary-load+replay floor, the pure per-modmul
+arithmetic ratio is higher (~3.5x at 6 limbs, ~100x at 32 limbs) because GMP's
+multiply is optimized asm and ours is list-based Lean; the end-to-end wall stays
+2-14x because the load+replay floor is shared.
+
+Caveats for the trust story: (1) `native_decide` primality proofs bypass the
+kernel reducer entirely (compiled GMP under `ofReduceBool`), so the seam does not
+touch them; the verified path applies only to kernel-checked (`decide`/`rfl`)
+certificates. (2) The modular reduction falls back to GMP for a multi-limb
+divisor, so a cert's reductions are not yet verified -- full verification needs
+the multi-limb Knuth-D division kernel.
