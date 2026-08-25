@@ -6,6 +6,7 @@ import Lean4Lean.Instantiate
 import Lean4Lean.ForEachExprV
 import Lean4Lean.EquivManager
 import Lean4Lean.FuelConfig
+import Lean4Lean.VerifiedNat
 
 namespace Lean4Lean
 open Lean hiding Environment Exception
@@ -474,7 +475,7 @@ def reducePow (a b : Expr) : RecM (Option Expr) := do
   let some v1 := rawNatLitExt? (← whnf a) | return none
   let some v2 := rawNatLitExt? (← whnf b) | return none
   if v2 > reducePowMaxExp then return none
-  return some <| .lit <| .natVal <| Nat.pow v1 v2
+  return some <| .lit <| .natVal <| VerifiedNat.verifiedNatPow v1 v2
 
 /-- Reduces the application `f a b` to a boolean expression if `a` and `b` can be reduced to Nat
 literals.
@@ -499,20 +500,20 @@ def reduceNat (e : Expr) : RecM (Option Expr) := do
       return some <| .lit <| .natVal <| v + 1
   else if nargs == 2 then
     let .app (.app (.const f _) a) b := e | return none
-    if f == ``Nat.add then return ← reduceBinNatOp Nat.add a b
-    if f == ``Nat.sub then return ← reduceBinNatOp Nat.sub a b
-    if f == ``Nat.mul then return ← reduceBinNatOp Nat.mul a b
+    if f == ``Nat.add then return ← reduceBinNatOp VerifiedNat.verifiedNatAdd a b
+    if f == ``Nat.sub then return ← reduceBinNatOp VerifiedNat.verifiedNatSub a b
+    if f == ``Nat.mul then return ← reduceBinNatOp VerifiedNat.verifiedNatMul a b
     if f == ``Nat.pow then return ← reducePow a b
-    if f == ``Nat.gcd then return ← reduceBinNatOp Nat.gcd a b
-    if f == ``Nat.mod then return ← reduceBinNatOp Nat.mod a b
-    if f == ``Nat.div then return ← reduceBinNatOp Nat.div a b
-    if f == ``Nat.beq then return ← reduceBinNatPred Nat.beq a b
-    if f == ``Nat.ble then return ← reduceBinNatPred Nat.ble a b
-    if f == ``Nat.land then return ← reduceBinNatOp Nat.land a b
-    if f == ``Nat.lor then return ← reduceBinNatOp Nat.lor a b
-    if f == ``Nat.xor then return ← reduceBinNatOp Nat.xor a b
-    if f == ``Nat.shiftLeft then return ← reduceBinNatOp Nat.shiftLeft a b
-    if f == ``Nat.shiftRight then return ← reduceBinNatOp Nat.shiftRight a b
+    if f == ``Nat.gcd then return ← reduceBinNatOp VerifiedNat.verifiedNatGcd a b
+    if f == ``Nat.mod then return ← reduceBinNatOp VerifiedNat.verifiedNatMod a b
+    if f == ``Nat.div then return ← reduceBinNatOp VerifiedNat.verifiedNatDiv a b
+    if f == ``Nat.beq then return ← reduceBinNatPred VerifiedNat.verifiedNatBeq a b
+    if f == ``Nat.ble then return ← reduceBinNatPred VerifiedNat.verifiedNatBle a b
+    if f == ``Nat.land then return ← reduceBinNatOp VerifiedNat.verifiedNatLand a b
+    if f == ``Nat.lor then return ← reduceBinNatOp VerifiedNat.verifiedNatLor a b
+    if f == ``Nat.xor then return ← reduceBinNatOp VerifiedNat.verifiedNatXor a b
+    if f == ``Nat.shiftLeft then return ← reduceBinNatOp VerifiedNat.verifiedNatShiftLeft a b
+    if f == ``Nat.shiftRight then return ← reduceBinNatOp VerifiedNat.verifiedNatShiftRight a b
   return none
 
 @[inherit_doc whnf]
