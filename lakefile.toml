@@ -3,13 +3,11 @@ defaultTargets = ["Lean4Lean", "lean4lean", "Lean4Lean.Theory", "Lean4Lean.Verif
 
 [[require]]
 name = "batteries"
-git = "https://github.com/leanprover-community/batteries"
-rev = "v4.33.0-rc2"
+path = "../../../SSProve-lean/.lake/packages/batteries"
 
 [[require]]
-scope = "leanprover"
 name = "lean4export"
-rev = "v4.30.0"
+path = "../lean4export"
 
 [[lean_lib]]
 name = "Lean4Lean"
