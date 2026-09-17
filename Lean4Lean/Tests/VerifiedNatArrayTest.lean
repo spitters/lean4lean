@@ -8,10 +8,11 @@ import Lean4Lean.VerifiedNat
 /-!
 # Evaluation checks for the `Array UInt64` limb operations
 
-Each `#eval` compares the limb operations of `Lean4Lean.VerifiedNatArray`, and
-the routed `verifiedNat<Op>` functions, with the `Nat` operations on a fixed
-set of operands (word boundaries, mixed limb counts, a 1000-bit value) and
-shift counts `0, 1, 63, 64, 65, 1000`. Each prints the list of failing cases,
+Each `#eval` compares the limb operations of `Lean4Lean.VerifiedNatArray` and
+`Lean4Lean.VerifiedNatArith`, and the routed `verifiedNat<Op>` functions, with
+the `Nat` operations on a fixed set of operands (word boundaries, mixed limb
+counts, 1000-bit values), shift counts across the limb boundary, powers with
+exponents up to 1000, and power-of-two divisors. Each prints the list of failing cases,
 which is empty when the operations agree.
 -/
 
@@ -59,5 +60,56 @@ def shiftFailures (f g : Nat → Nat → Nat) : List (Nat × Nat) :=
 #eval failures verifiedNatBle Nat.ble
 #eval shiftFailures verifiedNatShiftLeft (· <<< ·)
 #eval shiftFailures verifiedNatShiftRight (· >>> ·)
+
+/-! ### Addition, subtraction, multiplication, powers, power-of-two division -/
+
+/-- Operands for the arithmetic checks. -/
+def arithOperands : List Nat :=
+  [0, 1, 2 ^ 32 - 1, 2 ^ 63, 2 ^ 64 - 1, 2 ^ 64, 2 ^ 100 + 7, 2 ^ 128 + 2 ^ 64 - 1,
+   2 ^ 1000 - 1, 3 ^ 500]
+
+/-- Pairs from `xs × ys` on which `f` disagrees with `g`. -/
+def failuresOn {α : Type} [BEq α] (xs ys : List Nat) (f g : Nat → Nat → α) :
+    List (Nat × Nat) :=
+  xs.flatMap fun a => (ys.filter fun b => f a b != g a b).map (a, ·)
+
+#eval failuresOn arithOperands arithOperands
+  (fun a b => toNatA (addA (ofNatA a) (ofNatA b))) (· + ·)
+#eval failuresOn arithOperands arithOperands
+  (fun a b => toNatA (subA (ofNatA a) (ofNatA b))) (· - ·)
+#eval failuresOn arithOperands arithOperands
+  (fun a b => toNatA (mulA (ofNatA a) (ofNatA b))) (· * ·)
+#eval failuresOn arithOperands arithOperands
+  (fun a b => addA (ofNatA a) (ofNatA b)) (fun a b => ofNatA (a + b))
+#eval failuresOn arithOperands arithOperands
+  (fun a b => subA (ofNatA a) (ofNatA b)) (fun a b => ofNatA (a - b))
+#eval failuresOn arithOperands arithOperands
+  (fun a b => mulA (ofNatA a) (ofNatA b)) (fun a b => ofNatA (a * b))
+#eval failuresOn arithOperands arithOperands verifiedNatAdd (· + ·)
+#eval failuresOn arithOperands arithOperands verifiedNatSub (· - ·)
+#eval failuresOn arithOperands arithOperands verifiedNatMul (· * ·)
+
+/-- Bases for the power checks with exponents up to 1000. -/
+def powBases : List Nat := [0, 1, 2, 3]
+/-- Exponents for the power checks. -/
+def powExps : List Nat := [0, 1, 2, 63, 64, 100, 1000]
+/-- Exponents for the two-limb base `2 ^ 64 + 1`, whose 1000th power has 1000
+    dense limbs. -/
+def powExpsWide : List Nat := [0, 1, 2, 63, 64, 100]
+
+#eval failuresOn powBases powExps verifiedNatPow (· ^ ·)
+#eval failuresOn powBases powExps
+  (fun a b => toNatA (powA (ofNatA a) b (ofNatA 1))) (· ^ ·)
+#eval failuresOn [2 ^ 64 + 1] powExpsWide verifiedNatPow (· ^ ·)
+#eval failuresOn [2 ^ 64 + 1] powExpsWide
+  (fun a b => toNatA (powA (ofNatA a) b (ofNatA 1))) (· ^ ·)
+
+/-- Power-of-two divisors. -/
+def pow2Divisors : List Nat := [1, 2, 2 ^ 63, 2 ^ 64, 2 ^ 100, 2 ^ 1000]
+
+#eval failuresOn arithOperands pow2Divisors verifiedNatDiv (· / ·)
+#eval failuresOn arithOperands pow2Divisors verifiedNatMod (· % ·)
+#eval failuresOn arithOperands [3, 2 ^ 64 + 1] verifiedNatDiv (· / ·)
+#eval failuresOn arithOperands [3, 2 ^ 64 + 1] verifiedNatMod (· % ·)
 
 end VerifiedNat.Test

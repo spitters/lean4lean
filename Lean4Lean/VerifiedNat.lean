@@ -3,7 +3,7 @@ Copyright (c) 2026 CatCrypt Contributors. All rights reserved.
 Released under MIT license as described in the file LICENSE.
 Authors: CatCrypt Contributors
 -/
-import Lean4Lean.VerifiedNatArray
+import Lean4Lean.VerifiedNatArith
 
 /-!
 # Verified limb-kernel arithmetic for the lean4lean `Nat` reducer
@@ -29,17 +29,17 @@ specification against `bignumVal` (the abstraction function `toNat`):
 * `land_val`/`lor_val`/`xor_val` : the bitwise value specs
 * `toNat_ofNat`    : `bignumVal (ofNat n) = n`
 
-`pow` (square-and-multiply over the Karatsuba multiply), `beq` and `ble` (via the
-verified subtraction) are composed from those kernels here. `div` and `mod` use
+`powLimbs` (square-and-multiply over the Karatsuba multiply) is composed from
+those kernels here. `div` and `mod` use
 the single-limb long-division kernel `divmodLE` (a `128 / 64 → 64` window per
 limb) for a divisor below `2 ^ 64`, and Knuth Algorithm D (`divModLimbs`) for a
 multi-limb divisor. `gcd` is the Euclidean algorithm over the routed `mod`.
 
-Coverage: add, sub, mul (Karatsuba dispatch), pow, shiftLeft, shiftRight, land,
-lor, xor, beq, ble, gcd, div, and mod all route through verified limbs.
+Coverage: add, sub, mul, pow, shiftLeft, shiftRight, land, lor, xor, beq, ble,
+gcd, div, and mod all route through verified limbs. add, sub, mul, pow,
 shiftLeft, shiftRight, land, lor, xor, beq and ble use the `Array UInt64`
-carrier of `Lean4Lean.VerifiedNatArray`; the others use the `List (BitVec 64)`
-carrier of this module.
+carrier of `Lean4Lean.VerifiedNatArray` and `Lean4Lean.VerifiedNatArith`;
+div, mod and gcd use the `List (BitVec 64)` carrier of this module.
 -/
 
 namespace VerifiedNat
@@ -395,16 +395,28 @@ stays value-correct. -/
 /-- Both operands fit in one machine word (native `Nat` op stays out of GMP). -/
 @[inline] def bothWord (a b : Nat) : Bool := a < oneLimb && b < oneLimb
 
+/-! The arithmetic, shift and bitwise operations run the `Array UInt64` limb
+loops of `Lean4Lean.VerifiedNatArray` and `Lean4Lean.VerifiedNatArith`; their
+value theorems are in `Lean4Lean.VerifiedNatArrayProofs`. -/
+
 def verifiedNatAddImpl (a b : Nat) : Nat :=
-  if bothWord a b then a + b else bignumVal (add (ofNat a) (ofNat b))
+  if bothWord a b then a + b else toNatA (addA (ofNatA a) (ofNatA b))
 def verifiedNatSubImpl (a b : Nat) : Nat :=
-  if bothWord a b then a - b else bignumVal (bnSub (ofNat a) (ofNat b))
+  if bothWord a b then a - b else toNatA (subA (ofNatA a) (ofNatA b))
 def verifiedNatMulImpl (a b : Nat) : Nat :=
-  if bothWord a b then a * b else bignumVal (mulDispatch (ofNat a) (ofNat b))
-def verifiedNatPowImpl (a b : Nat) : Nat := bignumVal (powLimbs (ofNat a) b (ofNat 1))
-/-! The shift and bitwise operations run the `Array UInt64` limb loops of
-`Lean4Lean.VerifiedNatArray`; their value theorems are in
-`Lean4Lean.VerifiedNatArrayProofs`. -/
+  if bothWord a b then a * b else toNatA (mulA (ofNatA a) (ofNatA b))
+
+/-- Power. `b = 0`, `a < 2` and `a = 2` are answered directly (the last by a
+    shift); a single-word base whose power fits in a word, by the bound
+    `(log2 a + 1) * b ≤ 64`, uses the native power; every other case runs
+    square-and-multiply over `mulA`. -/
+def verifiedNatPowImpl (a b : Nat) : Nat :=
+  if b = 0 then 1
+  else if a < 2 then a
+  else if a = 2 then
+    if b < 64 then 1 <<< b else toNatA (shiftLeftA (ofNatA 1) b)
+  else if a < oneLimb && (a.log2 + 1) * b ≤ 64 then a ^ b
+  else toNatA (powA (ofNatA a) b (ofNatA 1))
 
 def verifiedNatShiftLeftImpl (a b : Nat) : Nat :=
   if a < oneLimb then a <<< b else toNatA (shiftLeftA (ofNatA a) b)
@@ -417,19 +429,25 @@ def verifiedNatLorImpl (a b : Nat) : Nat :=
 def verifiedNatXorImpl (a b : Nat) : Nat :=
   if bothWord a b then a ^^^ b else toNatA (xorA (ofNatA a) (ofNatA b))
 
-/-- Quotient. A single-limb divisor (`b < 2 ^ 64`) uses the `divmodLE` window; a
-    multi-limb divisor uses Knuth Algorithm D (`divModLimbs`). Both are
-    limb-native. `b = 0` returns `0`, matching `Nat.div a 0`. -/
+/-- Quotient. A power-of-two divisor (`b &&& (b - 1) = 0`) is a right shift by
+    `log2 b`. Otherwise a single-limb divisor (`b < 2 ^ 64`) uses the `divmodLE`
+    window and a multi-limb divisor uses Knuth Algorithm D (`divModLimbs`). All
+    are limb-native. `b = 0` returns `0`, matching `Nat.div a 0`. -/
 def verifiedNatDivImpl (a b : Nat) : Nat :=
   if b = 0 then 0
+  else if b &&& (b - 1) = 0 then
+    if a < oneLimb then a >>> b.log2 else toNatA (shiftRightA (ofNatA a) b.log2)
   else if b < 2 ^ 64 then bignumVal (divmodLE (ofNat a) (BitVec.ofNat 64 b)).1
   else bignumVal (divModLimbs (ofNat a) (ofNat b)).1
 
-/-- Remainder. A single-limb divisor (`b < 2 ^ 64`) uses the `divmodLE` window; a
-    multi-limb divisor uses Knuth Algorithm D (`divModLimbs`). Both are
-    limb-native. `b = 0` returns `a`, matching `Nat.mod a 0`. -/
+/-- Remainder. A power-of-two divisor (`b &&& (b - 1) = 0`) is a mask by
+    `b - 1`. Otherwise a single-limb divisor (`b < 2 ^ 64`) uses the `divmodLE`
+    window and a multi-limb divisor uses Knuth Algorithm D (`divModLimbs`). All
+    are limb-native. `b = 0` returns `a`, matching `Nat.mod a 0`. -/
 def verifiedNatModImpl (a b : Nat) : Nat :=
   if b = 0 then a
+  else if b &&& (b - 1) = 0 then
+    if bothWord a b then a &&& (b - 1) else toNatA (landA (ofNatA a) (ofNatA (b - 1)))
   else if b < 2 ^ 64 then (divmodLE (ofNat a) (BitVec.ofNat 64 b)).2.toNat
   else bignumVal (divModLimbs (ofNat a) (ofNat b)).2
 
