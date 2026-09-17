@@ -23,6 +23,22 @@ open Kernel
 
 abbrev InferCache := ExprMap Expr
 
+/-- A `Nat` used as a key of `TypeChecker.State.natLimbs`. -/
+structure NatKey where
+  val : Nat
+  deriving DecidableEq
+
+/-- The hash of a `NatKey` mixes the low 64 bits of the value, its binary logarithm
+    and the 64 bits starting at half the binary logarithm; on a multi-limb value it
+    costs four runtime calls. -/
+instance : Hashable NatKey where
+  hash k :=
+    let l := k.val.log2
+    mixHash (mixHash (UInt64.ofNat k.val) (UInt64.ofNat (k.val >>> (l / 2)))) (UInt64.ofNat l)
+
+/-- The canonical limb array of the value of a key. -/
+abbrev NatLimbs (k : NatKey) : Type := {a : Array UInt64 // a = VerifiedNat.ofNatA k.val}
+
 structure TypeChecker.State where
   ngen : NameGenerator := { namePrefix := `_kernel_fresh, idx := 0 }
   inferTypeI : InferCache := {}
@@ -32,6 +48,7 @@ structure TypeChecker.State where
   eqvManager : EquivManager := {}
   failure : Std.HashSet (Expr × Expr) := {}
   unfold : ExprMap Expr := {}
+  natLimbs : Std.DHashMap NatKey NatLimbs := {}
 
 structure TypeChecker.Context where
   env : Environment
@@ -396,10 +413,79 @@ def reduceNative (_env : Environment) (e : Expr) : Except Exception (Option Expr
 
 def rawNatLitExt? (e : Expr) : Option Nat := if e == .natZero then some 0 else e.rawNatLit?
 
-def reduceBinNatOp (f : Nat → Nat → Nat) (a b : Expr) : RecM (Option Expr) := do
+/-- The largest number of entries of `State.natLimbs`. An insertion into a map of
+    this size starts from the empty map. -/
+def natLimbsMax : Nat := 4096
+
+/-- Insert an entry into `State.natLimbs`, emptying the map first when it is full. -/
+def natLimbsInsert (k : NatKey) (a : NatLimbs k) : M Unit :=
+  modify fun s => { s with
+    natLimbs := (if s.natLimbs.size < natLimbsMax then s.natLimbs else {}).insert k a }
+
+/-- The canonical limb array of `n`: the entry of `State.natLimbs` for `n` if there
+    is one, and otherwise `ofNatA n`, which is inserted. -/
+def natLimbsGet (n : Nat) : M (NatLimbs ⟨n⟩) := do
+  match (← get).natLimbs.get? ⟨n⟩ with
+  | some a => pure a
+  | none =>
+    let a : NatLimbs ⟨n⟩ := ⟨VerifiedNat.ofNatA n, rfl⟩
+    natLimbsInsert ⟨n⟩ a
+    pure a
+
+/-- The value of a limb array `r`; the normal form of `r` is inserted into
+    `State.natLimbs` under that value. -/
+def natLimbsResult (r : Array UInt64) : M Nat := do
+  let r' := VerifiedNat.normA r
+  let v := VerifiedNat.toNatA r'
+  natLimbsInsert ⟨v⟩ ⟨r', VerifiedNat.eq_ofNatA_of_isCanonA (VerifiedNat.isCanonA_normA r)⟩
+  pure v
+
+/-- `f v1 v2`, computed by `f`. -/
+def natPureOp (f : Nat → Nat → Nat) (v1 v2 : Nat) : M Nat := pure (f v1 v2)
+
+/-- `f v1 v2`, computed by `f` when both operands are single words and otherwise by
+    the limb operation `g` on the canonical limb arrays of the operands. -/
+def natBinOpLimbs (f : Nat → Nat → Nat) (g : Array UInt64 → Array UInt64 → Array UInt64)
+    (v1 v2 : Nat) : M Nat :=
+  if VerifiedNat.bothWord v1 v2 then pure (f v1 v2)
+  else do
+    let x1 ← natLimbsGet v1
+    let x2 ← natLimbsGet v2
+    natLimbsResult (g x1.1 x2.1)
+
+/-- `f v1 v2` for a shift `f` by `v2` bits, computed by `f` when `v1` is a single
+    word and otherwise by the limb shift `g` on the canonical limb array of `v1`. -/
+def natShiftOpLimbs (f : Nat → Nat → Nat) (g : Array UInt64 → Nat → Array UInt64)
+    (v1 v2 : Nat) : M Nat :=
+  if v1 < VerifiedNat.oneLimb then pure (f v1 v2)
+  else do
+    let x1 ← natLimbsGet v1
+    natLimbsResult (g x1.1 v2)
+
+/-- `v1 ^ v2`, computed by `verifiedNatPow` unless the base is a multi-limb value or
+    a power exceeding one word of a base above `2`, and otherwise by
+    square-and-multiply over the canonical limb array of the base. -/
+def natPowLimbs (v1 v2 : Nat) : M Nat :=
+  if v2 = 0 ∨ v1 < 3 ∨ (v1 < VerifiedNat.oneLimb ∧ (v1.log2 + 1) * v2 ≤ 64) then
+    pure (VerifiedNat.verifiedNatPow v1 v2)
+  else do
+    let x1 ← natLimbsGet v1
+    natLimbsResult (VerifiedNat.powA x1.1 v2 (VerifiedNat.ofNatA 1))
+
+/-- `f v1 v2` for a predicate `f`, computed by `f` when both operands are single
+    words and otherwise by `g` on the canonical limb arrays of the operands. -/
+def natBinPredLimbs (f : Nat → Nat → Bool) (g : Array UInt64 → Array UInt64 → Bool)
+    (v1 v2 : Nat) : M Bool :=
+  if VerifiedNat.bothWord v1 v2 then pure (f v1 v2)
+  else do
+    let x1 ← natLimbsGet v1
+    let x2 ← natLimbsGet v2
+    pure (g x1.1 x2.1)
+
+def reduceBinNatOp (op : Nat → Nat → M Nat) (a b : Expr) : RecM (Option Expr) := do
   let some v1 := rawNatLitExt? (← whnf a) | return none
   let some v2 := rawNatLitExt? (← whnf b) | return none
-  return some <| .lit <| .natVal <| f v1 v2
+  return some <| .lit <| .natVal <| ← op v1 v2
 
 def reducePowMaxExp : Nat := 1 <<< 24
 
@@ -407,12 +493,12 @@ def reducePow (a b : Expr) : RecM (Option Expr) := do
   let some v1 := rawNatLitExt? (← whnf a) | return none
   let some v2 := rawNatLitExt? (← whnf b) | return none
   if v2 > reducePowMaxExp then return none
-  return some <| .lit <| .natVal <| VerifiedNat.verifiedNatPow v1 v2
+  return some <| .lit <| .natVal <| ← natPowLimbs v1 v2
 
-def reduceBinNatPred (f : Nat → Nat → Bool) (a b : Expr) : RecM (Option Expr) := do
+def reduceBinNatPred (op : Nat → Nat → M Bool) (a b : Expr) : RecM (Option Expr) := do
   let some v1 := rawNatLitExt? (← whnf a) | return none
   let some v2 := rawNatLitExt? (← whnf b) | return none
-  return toExpr <| f v1 v2
+  return toExpr <| ← op v1 v2
 
 def reduceNat (e : Expr) : RecM (Option Expr) := do
   let nargs := e.getAppNumArgs
@@ -423,20 +509,25 @@ def reduceNat (e : Expr) : RecM (Option Expr) := do
       return some <| .lit <| .natVal <| v + 1
   else if nargs == 2 then
     let .app (.app (.const f _) a) b := e | return none
-    if f == ``Nat.add then return ← reduceBinNatOp VerifiedNat.verifiedNatAdd a b
-    if f == ``Nat.sub then return ← reduceBinNatOp VerifiedNat.verifiedNatSub a b
-    if f == ``Nat.mul then return ← reduceBinNatOp VerifiedNat.verifiedNatMul a b
+    if f == ``Nat.add then return ← reduceBinNatOp (natBinOpLimbs Nat.add VerifiedNat.addA) a b
+    if f == ``Nat.sub then return ← reduceBinNatOp (natBinOpLimbs Nat.sub VerifiedNat.subA) a b
+    if f == ``Nat.mul then return ← reduceBinNatOp (natBinOpLimbs Nat.mul VerifiedNat.mulA) a b
     if f == ``Nat.pow then return ← reducePow a b
-    if f == ``Nat.gcd then return ← reduceBinNatOp VerifiedNat.verifiedNatGcd a b
-    if f == ``Nat.mod then return ← reduceBinNatOp VerifiedNat.verifiedNatMod a b
-    if f == ``Nat.div then return ← reduceBinNatOp VerifiedNat.verifiedNatDiv a b
-    if f == ``Nat.beq then return ← reduceBinNatPred VerifiedNat.verifiedNatBeq a b
-    if f == ``Nat.ble then return ← reduceBinNatPred VerifiedNat.verifiedNatBle a b
-    if f == ``Nat.land then return ← reduceBinNatOp VerifiedNat.verifiedNatLand a b
-    if f == ``Nat.lor then return ← reduceBinNatOp VerifiedNat.verifiedNatLor a b
-    if f == ``Nat.xor then return ← reduceBinNatOp VerifiedNat.verifiedNatXor a b
-    if f == ``Nat.shiftLeft then return ← reduceBinNatOp VerifiedNat.verifiedNatShiftLeft a b
-    if f == ``Nat.shiftRight then return ← reduceBinNatOp VerifiedNat.verifiedNatShiftRight a b
+    if f == ``Nat.gcd then return ← reduceBinNatOp (natPureOp VerifiedNat.verifiedNatGcd) a b
+    if f == ``Nat.mod then return ← reduceBinNatOp (natPureOp VerifiedNat.verifiedNatMod) a b
+    if f == ``Nat.div then return ← reduceBinNatOp (natPureOp VerifiedNat.verifiedNatDiv) a b
+    if f == ``Nat.beq then
+      return ← reduceBinNatPred (natBinPredLimbs Nat.beq VerifiedNat.beqA) a b
+    if f == ``Nat.ble then
+      return ← reduceBinNatPred (natBinPredLimbs Nat.ble VerifiedNat.bleA) a b
+    if f == ``Nat.land then
+      return ← reduceBinNatOp (natBinOpLimbs Nat.land VerifiedNat.landA) a b
+    if f == ``Nat.lor then return ← reduceBinNatOp (natBinOpLimbs Nat.lor VerifiedNat.lorA) a b
+    if f == ``Nat.xor then return ← reduceBinNatOp (natBinOpLimbs Nat.xor VerifiedNat.xorA) a b
+    if f == ``Nat.shiftLeft then
+      return ← reduceBinNatOp (natShiftOpLimbs Nat.shiftLeft VerifiedNat.shiftLeftA) a b
+    if f == ``Nat.shiftRight then
+      return ← reduceBinNatOp (natShiftOpLimbs Nat.shiftRight VerifiedNat.shiftRightA) a b
   return none
 
 def whnf' (e : Expr) : RecM Expr := do
@@ -498,9 +589,9 @@ def isDefEqForall (t s : Expr) (subst : Array Expr := #[]) : RecM Bool :=
   | t, s => isDefEq (t.instantiateRev subst) (s.instantiateRev subst)
 
 def quickIsDefEq (t s : Expr) (useHash := false) : RecM LBool := do
-  if ← modifyGet fun (.mk a1 a2 a3 a4 a5 a6 a7 (eqvManager := m)) =>
+  if ← modifyGet fun (.mk a1 a2 a3 a4 a5 a6 a7 a8 (eqvManager := m)) =>
     let (b, m) := m.isEquiv useHash t s
-    (b, .mk a1 a2 a3 a4 a5 a6 a7 (eqvManager := m))
+    (b, .mk a1 a2 a3 a4 a5 a6 a7 a8 (eqvManager := m))
   then return .true
   match t, s with
   | .lam .., .lam .. => toLBoolM <| isDefEqLambda t s
