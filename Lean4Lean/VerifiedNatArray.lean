@@ -11,13 +11,16 @@ A natural number is carried as an `Array UInt64` of little-endian base-`2^64`
 limbs. The canonical form of `n` (the output of `ofNatA`) has no trailing zero
 limbs. This module defines
 
-* the conversions `ofNatA : Nat → Array UInt64` and `toNatA : Array UInt64 → Nat`,
-  both by balanced splitting and using only `>>>`, `<<<`, `&&&`, `|||`, `^^^` on
-  `Nat` and `UInt64.ofNat`/`UInt64.toNat` of values below `2 ^ 64`;
+* the conversions `ofNatA : Nat → Array UInt64` and `toNatA : Array UInt64 → Nat`.
+  `toNatA` joins limbs by balanced splitting with `<<<` and `|||`. `ofNatA`
+  splits balanced down to blocks of `limbBlock` limbs with `>>>`, `<<<`, `^^^`,
+  and reads each limb of a block as `UInt64.ofNat` (the low 64 bits) of a shift
+  of the block;
 * limb loops for bitwise and, or, xor, left and right shift by a `Nat` bit count,
   and comparison of canonical arrays;
 * the value theorems relating each operation to the `Nat` operation, stated
-  through the bit characterization `limbBit` of `toNatA`.
+  through the bit characterization `limbBit` of `toNatA`;
+* the canonical form `IsCanonA` and `normA_eq_ofNatA`.
 -/
 
 namespace VerifiedNat
@@ -36,22 +39,50 @@ def toNatRange (a : Array UInt64) (lo : Nat) : Nat → Nat
 termination_by n => n
 decreasing_by all_goals omega
 
-/-- The little-endian base-`2 ^ 64` value of a limb array. -/
+/-- The little-endian base-`2 ^ 64` value of a limb array. Decoding `n ≥ 1` limbs
+    costs `n` calls of `UInt64.toNat` and `2 * (n - 1)` `Nat` operations (one shift
+    and one or per join), which is the least number of binary joins that assemble
+    `n` limb values. -/
 def toNatA (a : Array UInt64) : Nat := toNatRange a 0 a.size
 
-/-- Push the `k` low limbs of `n`, least significant first, onto `acc`. The
-    range is split in half: the low half is `n ^^^ ((n >>> m) <<< m)` and the high
-    half is `n >>> m`, with `m = 64 * (k / 2)`. -/
-def pushLimbs (n : Nat) : Nat → Array UInt64 → Array UInt64
+/-- The largest number of limbs `pushLimbs` extracts from one `Nat` by `pushBlock`. -/
+def limbBlock : Nat := 16
+
+/-- Push the `k` low limbs of `blk`, least significant first, onto `acc`. Limb `0`
+    is `UInt64.ofNat blk` (the low 64 bits) and the remaining limbs are those of
+    `blk >>> 64`. Extracting `k ≥ 1` limbs costs `k` calls of `UInt64.ofNat` and
+    `k - 1` shifts. -/
+def pushBlock (blk : Nat) : Nat → Array UInt64 → Array UInt64
   | 0, acc => acc
-  | 1, acc => acc.push (UInt64.ofNat n)
-  | k + 2, acc =>
-    let h := (k + 2) / 2
+  | 1, acc => acc.push (UInt64.ofNat blk)
+  | k + 2, acc => pushBlock (blk >>> 64) (k + 1) (acc.push (UInt64.ofNat blk))
+
+/-- The split point of a `k`-limb range in `pushLimbs`: half of the
+    `⌈k / limbBlock⌉` blocks, rounded down, measured in limbs. -/
+def splitLimbs (k : Nat) : Nat := limbBlock * ((k + limbBlock - 1) / limbBlock / 2)
+
+theorem splitLimbs_bounds {k : Nat} (hk : ¬ k ≤ limbBlock) :
+    0 < splitLimbs k ∧ splitLimbs k < k := by
+  simp only [splitLimbs, limbBlock] at *; omega
+
+/-- Push the `k` low limbs of `n`, least significant first, onto `acc`. A range
+    of at most `limbBlock` limbs is extracted by `pushBlock`. A longer range splits
+    at `h = splitLimbs k` limbs: the low part is `n ^^^ ((n >>> m) <<< m)` and the
+    high part is `n >>> m`, with `m = 64 * h`, so every low part is a whole number
+    of blocks.
+
+    With `q = ⌈k / limbBlock⌉` blocks, the extraction of `k ≥ 1` limbs costs
+    `3 * (q - 1)` `Nat` operations for the splits, `k - q` shifts inside the
+    blocks and `k` calls of `UInt64.ofNat`: `2 * k + 2 * q - 3` runtime calls. -/
+def pushLimbs (n k : Nat) (acc : Array UInt64) : Array UInt64 :=
+  if _hk : k ≤ limbBlock then pushBlock n k acc
+  else
+    let h := splitLimbs k
     let hi := n >>> (64 * h)
     let lo := n ^^^ (hi <<< (64 * h))
-    pushLimbs hi (k + 2 - h) (pushLimbs lo h acc)
-termination_by k => k
-decreasing_by all_goals omega
+    pushLimbs hi (k - h) (pushLimbs lo h acc)
+termination_by k
+decreasing_by all_goals have := splitLimbs_bounds _hk; omega
 
 /-- The number of limbs of the canonical form of `n`. -/
 def limbCount (n : Nat) : Nat := if n = 0 then 0 else n.log2 / 64 + 1
@@ -190,31 +221,32 @@ theorem testBit_toNatA (a : Array UInt64) (j : Nat) : (toNatA a).testBit j = lim
 theorem getD_zero_of_size_le (a : Array UInt64) {i : Nat} (h : a.size ≤ i) : a.getD i 0 = 0 := by
   simp [Array.getD_eq_getD_getElem?, Array.getElem?_eq_none h]
 
-theorem pushLimbs_size (n k : Nat) (acc : Array UInt64) :
-    (pushLimbs n k acc).size = acc.size + k := by
+theorem pushBlock_size (n k : Nat) (acc : Array UInt64) :
+    (pushBlock n k acc).size = acc.size + k := by
   induction k using Nat.strongRecOn generalizing n acc with
   | _ k ih =>
     match k with
-    | 0 => simp [pushLimbs]
-    | 1 => simp [pushLimbs]
+    | 0 => simp [pushBlock]
+    | 1 => simp [pushBlock]
     | k + 2 =>
-      rw [pushLimbs, ih _ (by omega), ih _ (by omega)]
+      rw [pushBlock, ih _ (by omega)]
+      simp only [Array.size_push]
       omega
 
-theorem pushLimbs_bit (n k : Nat) (acc : Array UInt64) (i b : Nat) (hb : b < 64) :
-    ((pushLimbs n k acc).getD i 0).toNat.testBit b =
+theorem pushBlock_bit (n k : Nat) (acc : Array UInt64) (i b : Nat) (hb : b < 64) :
+    ((pushBlock n k acc).getD i 0).toNat.testBit b =
       if i < acc.size then (acc.getD i 0).toNat.testBit b
       else (decide (i < acc.size + k) && n.testBit (64 * (i - acc.size) + b)) := by
   induction k using Nat.strongRecOn generalizing n acc with
   | _ k ih =>
     match k with
     | 0 =>
-      rw [pushLimbs]
+      rw [pushBlock]
       by_cases hi : i < acc.size
       · simp [hi]
       · simp [hi, getD_zero_of_size_le acc (Nat.le_of_not_lt hi)]
     | 1 =>
-      rw [pushLimbs]
+      rw [pushBlock]
       by_cases hi : i < acc.size
       · simp [hi, Array.getD_eq_getD_getElem?, Array.getElem?_push, Nat.ne_of_lt hi]
       · by_cases he : i = acc.size
@@ -226,20 +258,59 @@ theorem pushLimbs_bit (n k : Nat) (acc : Array UInt64) (i b : Nat) (hb : b < 64)
         · rw [getD_zero_of_size_le _ (by simp; omega)]
           simp [hi, show ¬ i < acc.size + 1 by omega]
     | k + 2 =>
-      rw [pushLimbs, ih _ (by omega), pushLimbs_size]
-      have hb1 : (k + 2) / 2 < k + 2 := by omega
-      generalize (k + 2) / 2 = h at hb1 ⊢
+      have e : acc.push (UInt64.ofNat n) = pushBlock n 1 acc := rfl
+      rw [pushBlock, e, ih _ (by omega), pushBlock_size, ih _ (by omega)]
+      by_cases hi : i < acc.size + 1
+      · rw [if_pos hi]
+        by_cases hi' : i < acc.size
+        · simp [hi']
+        · rw [if_neg hi', if_neg hi', decide_eq_true hi,
+            decide_eq_true (by omega : i < acc.size + (k + 2))]
+      · rw [if_neg hi, if_neg (by omega : ¬ i < acc.size), Nat.testBit_shiftRight]
+        have e1 : 64 + (64 * (i - (acc.size + 1)) + b) = 64 * (i - acc.size) + b := by omega
+        have e2 : (i < acc.size + 1 + (k + 1)) = (i < acc.size + (k + 2)) := by
+          apply propext; omega
+        rw [e1]
+        simp only [e2]
+
+theorem pushLimbs_size (n k : Nat) (acc : Array UInt64) :
+    (pushLimbs n k acc).size = acc.size + k := by
+  induction k using Nat.strongRecOn generalizing n acc with
+  | _ k ih =>
+    rw [pushLimbs]
+    split
+    · exact pushBlock_size _ _ _
+    · rename_i hk
+      have hb := splitLimbs_bounds hk
+      dsimp only
+      rw [ih _ (by omega), ih _ (by omega)]
+      omega
+
+theorem pushLimbs_bit (n k : Nat) (acc : Array UInt64) (i b : Nat) (hb : b < 64) :
+    ((pushLimbs n k acc).getD i 0).toNat.testBit b =
+      if i < acc.size then (acc.getD i 0).toNat.testBit b
+      else (decide (i < acc.size + k) && n.testBit (64 * (i - acc.size) + b)) := by
+  induction k using Nat.strongRecOn generalizing n acc with
+  | _ k ih =>
+    rw [pushLimbs]
+    split
+    · exact pushBlock_bit _ _ _ _ _ hb
+    · rename_i hk
+      have hb1 := splitLimbs_bounds hk
+      dsimp only
+      rw [ih _ (by omega), pushLimbs_size]
+      generalize splitLimbs k = h at hb1 ⊢
       by_cases hi : i < acc.size + h
       · rw [if_pos hi, ih _ (by omega)]
         by_cases hi' : i < acc.size
         · simp [hi']
-        · rw [if_neg hi', if_neg hi', decide_eq_true hi, decide_eq_true (by omega : i < acc.size + (k + 2))]
+        · rw [if_neg hi', if_neg hi', decide_eq_true hi, decide_eq_true (by omega : i < acc.size + k)]
           simp only [Bool.true_and, Nat.testBit_xor, Nat.testBit_shiftLeft]
           rw [decide_eq_false (by omega : ¬ 64 * (i - acc.size) + b ≥ 64 * h)]
           simp
       · rw [if_neg hi, if_neg (by omega : ¬ i < acc.size), Nat.testBit_shiftRight]
         have e1 : 64 * h + (64 * (i - (acc.size + h)) + b) = 64 * (i - acc.size) + b := by omega
-        have e2 : (i < acc.size + h + (k + 2 - h)) = (i < acc.size + (k + 2)) := by
+        have e2 : (i < acc.size + h + (k - h)) = (i < acc.size + k) := by
           apply propext; omega
         rw [e1]
         simp only [e2]
@@ -533,5 +604,71 @@ theorem bleA_ofNatA (a b : Nat) : bleA (ofNatA a) (ofNatA b) = Nat.ble a b := by
   rw [Bool.eq_iff_iff, Nat.ble_eq, bleA, cmpA_ofNatA, bne_iff_ne, ne_eq]
   rw [Nat.compare_eq_gt]
   omega
+
+/-! ## Canonical form -/
+
+/-- A limb array is canonical when it is empty or its last limb is nonzero. -/
+def IsCanonA (a : Array UInt64) : Prop := ∀ h : 0 < a.size, a[a.size - 1] ≠ 0
+
+theorem isCanonA_normA (x : Array UInt64) : IsCanonA (normA x) := by
+  fun_induction normA x with
+  | case1 x h => intro h'; omega
+  | case2 x h h0 ih => exact ih
+  | case3 x h h0 => intro _; exact h0
+
+theorem size_eq_limbCount_of_isCanonA {a : Array UInt64} (h : IsCanonA a) :
+    a.size = limbCount (toNatA a) := by
+  have hlt := toNatA_lt a
+  by_cases hs : a.size = 0
+  · rw [hs, Nat.mul_zero, Nat.pow_zero, Nat.lt_one_iff] at hlt
+    simp [limbCount, hlt, hs]
+  · obtain ⟨t, ht⟩ := Nat.exists_testBit_of_ne_zero (x := (a[a.size - 1]'(by omega)).toNat)
+      (fun h0 => h (by omega) (UInt64.toNat_inj.mp (by rw [h0]; rfl)))
+    have ht64 : t < 64 := by
+      apply Nat.lt_of_not_le
+      intro hle
+      rw [testBit_toNat_of_ge _ hle] at ht
+      cases ht
+    have hbit : (toNatA a).testBit (64 * (a.size - 1) + t) = true := by
+      rw [testBit_toNatA, limbBit_eq a rfl ht64,
+        Array.getD_eq_getD_getElem?, Array.getElem?_eq_getElem (by omega)]
+      exact ht
+    have hge := Nat.ge_two_pow_of_testBit hbit
+    have hne : toNatA a ≠ 0 := fun h0 => by
+      rw [h0] at hge; exact Nat.lt_irrefl _ (Nat.lt_of_lt_of_le (Nat.two_pow_pos _) hge)
+    have h1 := (Nat.log2_lt hne).2 hlt
+    have h2 := (Nat.le_log2 hne).2
+      (Nat.le_trans (Nat.pow_le_pow_right (by decide) (Nat.le_add_right _ t)) hge)
+    simp only [limbCount, hne, if_false]
+    omega
+
+/-- A canonical limb array is the `ofNatA` encoding of its value. -/
+theorem eq_ofNatA_of_isCanonA {a : Array UInt64} (h : IsCanonA a) :
+    a = ofNatA (toNatA a) := by
+  have hs : a.size = (ofNatA (toNatA a)).size := by
+    rw [size_ofNatA, size_eq_limbCount_of_isCanonA h]
+  refine Array.ext hs fun i h1 h2 => UInt64.toNat_inj.mp (Nat.eq_of_testBit_eq fun u => ?_)
+  by_cases hu : u < 64
+  · have e1 := limbBit_eq a (i := i) rfl hu
+    have e2 := limbBit_eq (ofNatA (toNatA a)) (i := i) rfl hu
+    rw [limbBit_ofNatA] at e2
+    have g1 : a[i] = a.getD i 0 := by
+      rw [Array.getD_eq_getD_getElem?, Array.getElem?_eq_getElem h1, Option.getD_some]
+    have g2 : (ofNatA (toNatA a))[i] = (ofNatA (toNatA a)).getD i 0 := by
+      rw [Array.getD_eq_getD_getElem?, Array.getElem?_eq_getElem h2, Option.getD_some]
+    rw [g1, g2, ← e1, ← e2, testBit_toNatA]
+  · rw [testBit_toNat_of_ge _ (by omega), testBit_toNat_of_ge _ (by omega)]
+
+/-- Normalizing a limb array yields the `ofNatA` encoding of its value. -/
+theorem normA_eq_ofNatA (x : Array UInt64) : normA x = ofNatA (toNatA x) := by
+  have hv : toNatA (normA x) = toNatA x :=
+    Nat.eq_of_testBit_eq fun j => by rw [testBit_toNatA, testBit_toNatA, limbBit_normA]
+  rw [← hv]
+  exact eq_ofNatA_of_isCanonA (isCanonA_normA x)
+
+theorem isCanonA_ofNatA (n : Nat) : IsCanonA (ofNatA n) := by
+  have h := normA_eq_ofNatA (ofNatA n)
+  rw [toNatA_ofNatA] at h
+  exact h ▸ isCanonA_normA _
 
 end VerifiedNat
