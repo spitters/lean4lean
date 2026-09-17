@@ -3,6 +3,7 @@ Copyright (c) 2026 CatCrypt Contributors. All rights reserved.
 Released under MIT license as described in the file LICENSE.
 Authors: CatCrypt Contributors
 -/
+import Lean4Lean.VerifiedNatArray
 
 /-!
 # Verified limb-kernel arithmetic for the lean4lean `Nat` reducer
@@ -36,6 +37,9 @@ multi-limb divisor. `gcd` is the Euclidean algorithm over the routed `mod`.
 
 Coverage: add, sub, mul (Karatsuba dispatch), pow, shiftLeft, shiftRight, land,
 lor, xor, beq, ble, gcd, div, and mod all route through verified limbs.
+shiftLeft, shiftRight, land, lor, xor, beq and ble use the `Array UInt64`
+carrier of `Lean4Lean.VerifiedNatArray`; the others use the `List (BitVec 64)`
+carrier of this module.
 -/
 
 namespace VerifiedNat
@@ -398,16 +402,20 @@ def verifiedNatSubImpl (a b : Nat) : Nat :=
 def verifiedNatMulImpl (a b : Nat) : Nat :=
   if bothWord a b then a * b else bignumVal (mulDispatch (ofNat a) (ofNat b))
 def verifiedNatPowImpl (a b : Nat) : Nat := bignumVal (powLimbs (ofNat a) b (ofNat 1))
+/-! The shift and bitwise operations run the `Array UInt64` limb loops of
+`Lean4Lean.VerifiedNatArray`; their value theorems are in
+`Lean4Lean.VerifiedNatArrayProofs`. -/
+
 def verifiedNatShiftLeftImpl (a b : Nat) : Nat :=
-  if a < oneLimb then a <<< b else bignumVal (shl (ofNat a) b)
+  if a < oneLimb then a <<< b else toNatA (shiftLeftA (ofNatA a) b)
 def verifiedNatShiftRightImpl (a b : Nat) : Nat :=
-  if a < oneLimb then a >>> b else bignumVal (shr (ofNat a) b)
+  if a < oneLimb then a >>> b else toNatA (shiftRightA (ofNatA a) b)
 def verifiedNatLandImpl (a b : Nat) : Nat :=
-  if bothWord a b then a &&& b else bignumVal (land (ofNat a) (ofNat b))
+  if bothWord a b then a &&& b else toNatA (landA (ofNatA a) (ofNatA b))
 def verifiedNatLorImpl (a b : Nat) : Nat :=
-  if bothWord a b then a ||| b else bignumVal (lor (ofNat a) (ofNat b))
+  if bothWord a b then a ||| b else toNatA (lorA (ofNatA a) (ofNatA b))
 def verifiedNatXorImpl (a b : Nat) : Nat :=
-  if bothWord a b then a ^^^ b else bignumVal (xorLimbs (ofNat a) (ofNat b))
+  if bothWord a b then a ^^^ b else toNatA (xorA (ofNatA a) (ofNatA b))
 
 /-- Quotient. A single-limb divisor (`b < 2 ^ 64`) uses the `divmodLE` window; a
     multi-limb divisor uses Knuth Algorithm D (`divModLimbs`). Both are
@@ -437,15 +445,13 @@ def gcdImplAux : Nat → Nat → Nat → Nat
 def verifiedNatGcdImpl (a b : Nat) : Nat :=
   if bothWord a b then Nat.gcd a b else gcdImplAux (a + 1) a b
 
-/-- `a == b` via limb-list equality of the canonical digit expansions. -/
+/-- `a == b` via equality of the canonical limb arrays. -/
 def verifiedNatBeqImpl (a b : Nat) : Bool :=
-  if bothWord a b then Nat.beq a b else ofNat a == ofNat b
+  if bothWord a b then Nat.beq a b else beqA (ofNatA a) (ofNatA b)
 
-/-- `a ≤ b` via the verified truncating subtraction: `a ≤ b ↔ a - b = 0`, and a
-    value of `0` normalizes to the empty limb list. -/
+/-- `a ≤ b` via comparison of the canonical limb arrays. -/
 def verifiedNatBleImpl (a b : Nat) : Bool :=
-  if bothWord a b then Nat.ble a b
-  else norm (bnSub (ofNat a) (ofNat b)) == ([] : List (BitVec 64))
+  if bothWord a b then Nat.ble a b else bleA (ofNatA a) (ofNatA b)
 
 @[implemented_by verifiedNatAddImpl]
 def verifiedNatAdd (a b : Nat) : Nat := a + b
