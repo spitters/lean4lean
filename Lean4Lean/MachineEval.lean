@@ -11,18 +11,19 @@ This module gives the checker one rule for reducing `Lean.reduceBool c`, active 
 The rule applies when the constant `c` is a definition without universe parameters whose value
 is, syntactically,
 
-  `CatCrypt.Crypto.SecureCompilation.VerifiedEval.machineAcceptsNat chunks n regs regions res`
+  `CatCrypt.Crypto.SecureCompilation.VerifiedEval.machineAcceptsNatD chunks n h regs regions res`
 
 where `chunks : List (List Nat)` (the code bytes, in chunks), `regs : List Nat` and
 `regions : List (Nat × List Nat)` are closed chains of `List.cons` / `List.nil` / `Prod.mk` (at
 universe `0` and at the types `Nat`, `List Nat`, `Prod Nat (List Nat)`) whose leaves are raw
-natural-number literals, and `n` (the instruction count) and `res` are raw literals.
+natural-number literals, `n` (the instruction count) and `res` are raw literals, and `h` is any
+term; the rule does not inspect it.
 
-The rule returns the processor's answer on the concatenated code bytes. `machineAcceptsNat` is
-`false` when the bytes do not decode into exactly `n` instructions, and the rule does not decode
-them, so the rule agrees with the definition only on byte strings that decode. That condition is
-part of the trusted base: the `verified_decide_lit` tactic emits only bytes whose decoding is
-proved, but the rule does not check it.
+The rule returns the processor's answer on the concatenated code bytes. The definition is `false`
+when the bytes do not decode into exactly `n` instructions; the argument
+`h : codeDecodes chunks n = true` excludes that case. The rule relies on `h` without decoding:
+the application occurs in the value of the definition `c`, which the checker has type-checked
+before `Lean.reduceBool c` is reduced, so `h` is a checked proof of the decoding fact.
 `regs` must have sixteen entries below `2 ^ 64`, `res` must be below `16`, every byte of the code
 and of the regions must be below `256`, and every region base must be below `2 ^ 64`. The
 arguments are decoded by `decodeCall`, which does not reduce anything: any other form,
@@ -42,10 +43,10 @@ A proof checked with this rule relies, in addition to the checker, on:
 
 * the decoder `decodeCall` and the serialiser `vrunInput` of this module;
 * the runner executable named by `CATCRYPT_VRUN`, and the agreement of its execution of the code
-  with the definition of `machineAcceptsNat` on the decoded arguments;
+  with the definition of `machineAcceptsNatD` on the decoded arguments;
 * the processor that executes the code.
 
-The rule evaluates the one function `machineAcceptsNat` and no other: `reduceBool` on any other
+The rule evaluates the one function `machineAcceptsNatD` and no other: `reduceBool` on any other
 constant, and every `reduceNat`, still throws.
 
 ## Access to `IO`
@@ -61,7 +62,7 @@ open Kernel
 
 /-- The head constant the rule evaluates. -/
 def machineAcceptsNatName : Name :=
-  `CatCrypt.Crypto.SecureCompilation.VerifiedEval.machineAcceptsNat
+  `CatCrypt.Crypto.SecureCompilation.VerifiedEval.machineAcceptsNatD
 
 /-- `Nat`. -/
 def natTy : Expr := .const ``Nat []
@@ -101,7 +102,7 @@ def decodeRegion : Expr → Option (Nat × Array Nat)
     else none
   | _ => none
 
-/-- The decoded arguments of `machineAcceptsNat chunks n regs regions res`. -/
+/-- The decoded arguments of `machineAcceptsNatD chunks n h regs regions res`. -/
 structure Call where
   code : Array Nat
   n : Nat
@@ -109,10 +110,10 @@ structure Call where
   regions : Array (Nat × Array Nat)
   res : Nat
 
-/-- Decode `machineAcceptsNat chunks n regs regions res` with literal arguments; `none` on any
+/-- Decode `machineAcceptsNatD chunks n h regs regions res` with literal arguments; `none` on any
 other expression. -/
 def decodeCall : Expr → Option Call
-  | .app (.app (.app (.app (.app (.const f []) code) cnt) regs) regions) res =>
+  | .app (.app (.app (.app (.app (.app (.const f []) code) cnt) _h) regs) regions) res =>
     if f == machineAcceptsNatName then do
       let chunks ← decodeList listNatTy (fun c => decodeList natTy decodeLit c #[]) code #[]
       let code := chunks.foldl (· ++ ·) #[]
