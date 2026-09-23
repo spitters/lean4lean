@@ -77,6 +77,21 @@ theorem FVarsIn.fvars_cons :
     FVarsIn (· ∈ VLCtx.fvars Δ) e → FVarsIn (· ∈ VLCtx.fvars ((ofv, d) :: Δ)) e :=
   FVarsIn.mono fun a h => by cases ofv <;> simp [h]
 
+theorem FVarsIn.default {P} : FVarsIn P (default : Expr) := by
+  show FVarsIn P (Expr.const _ []); exact nofun
+
+/-- Digging into an application spine keeps the free variables in the context. `getRevArg!`
+panics off the spine, and the panic value is a constant, so that case is vacuous too. -/
+theorem FVarsIn.getRevArg! {P} : ∀ {e : Expr} {i}, FVarsIn P e → FVarsIn P (e.getRevArg! i)
+  | .app _ a, 0, h => h.2
+  | .app f _, i+1, h => h.1.getRevArg! (i := i)
+  | .bvar .., _, _ | .fvar .., _, _ | .mvar .., _, _ | .sort .., _, _ | .const .., _, _
+  | .lam .., _, _ | .forallE .., _, _ | .letE .., _, _ | .lit .., _, _
+  | .mdata .., _, _ | .proj .., _, _ => by
+    simpa [Expr.getRevArg!] using FVarsIn.default
+
+theorem FVarsIn.getArg! {P} {e : Expr} {i n} (h : FVarsIn P e) :
+    FVarsIn P (e.getArg! i n) := h.getRevArg!
 theorem FVarsIn.abstract_instantiate1 (h : FVarsIn (· ≠ v) e) :
     (Expr.instantiate1' e (.fvar v) k).abstract1 v k = e := by
   induction e generalizing k with simp_all [Expr.instantiate1', Expr.abstract1, FVarsIn]
@@ -91,6 +106,37 @@ theorem FVarsIn.abstract_eq_self (h : FVarsIn (· ≠ v) e) (hc : Closed e k) :
     e.abstract1 v k = e := by
   induction e generalizing k <;> simp_all [FVarsIn, Closed, Expr.abstract1]
   exact Ne.symm h
+
+/-- The converse of `FVarsIn.abstract_eq_self`. `Expr.abstract1_eq_self` already says an
+abstraction that left no loose bvar behind did nothing; this says the same thing about the
+variable rather than the term, which is the form a context argument wants.
+
+The incoming `FVarsIn P e` is not redundant: `FVarsIn` also demands mvar-freeness of levels and
+is outright `False` on `.mvar`, and no loose-bvar fact can supply that. It always comes from the
+term's own translation, which is where mvar-freeness lives. -/
+theorem FVarsIn.of_abstract1 {v : FVarId} {e : Expr} {k}
+    (hP : FVarsIn P e) (h : (Expr.abstract1 v e k).looseBVarRange' ≤ k) :
+    FVarsIn (fun fv => P fv ∧ fv ≠ v) e := by
+  induction e generalizing k with
+  | fvar v' =>
+    simp only [Expr.abstract1] at h
+    split at h
+    · simp only [Expr.looseBVarRange'] at h; omega
+    · rename_i hne; exact ⟨hP, fun eq => hne (by simp [eq])⟩
+  | _ => simp_all [FVarsIn, Expr.abstract1, Expr.looseBVarRange', Nat.max_le] <;> grind
+
+theorem FVarsIn.of_abstractList {vs : List FVarId} : ∀ {e : Expr} {k},
+    FVarsIn P e → (Expr.abstractList e vs k).looseBVarRange' ≤ k →
+    FVarsIn (fun fv => P fv ∧ fv ∉ vs) e := by
+  induction vs with
+  | nil => exact fun hP _ => hP.mono fun _ h => ⟨h, by simp⟩
+  | cons a vs ih =>
+    intro e k hP h
+    have h1 : (Expr.abstractList (Expr.abstract1 a e k) vs k).looseBVarRange' ≤ k := h
+    have hA : (Expr.abstract1 a e k).looseBVarRange' ≤ k := Expr.abstractList_eq_self h1 ▸ h1
+    have he : Expr.abstract1 a e k = e := Expr.abstract1_eq_self hA
+    exact (ih hP (he ▸ h1)).mp (fun _ x y => ⟨x.1, by simp [y.2, x.2]⟩)
+      (FVarsIn.of_abstract1 hP hA)
 
 theorem FVarsIn.liftLooseBVars (h : FVarsIn P e) : FVarsIn P (Expr.liftLooseBVars' e s d) := by
   induction e generalizing s <;> simp_all [FVarsIn, Expr.liftLooseBVars']
@@ -115,6 +161,15 @@ theorem FVarsIn.abstract1 (h1 : FVarsIn P e) :
 theorem FVarsIn.appRevList :
     FVarsIn P (f.mkAppRevList es) ↔ FVarsIn P f ∧ ∀ e ∈ es, FVarsIn P e := by
   induction es <;> simp [FVarsIn, and_comm, and_left_comm, *]
+
+/-- Abstracting a variable removes it from what the term mentions, so the predicate may drop it.
+The companion to `FVarsIn.abstract1`, which keeps the predicate fixed; this is the form a caller
+that opened a binder and is now closing it again wants. -/
+theorem FVarsIn.abstract1_erase {a : FVarId} : ∀ {e : Expr} {k},
+    FVarsIn (fun fv => P fv ∨ fv = a) e → FVarsIn P (Expr.abstract1 a e k) := by
+  intro e
+  induction e with (intro k h; simp_all [FVarsIn, Expr.abstract1])
+  | fvar v => split <;> simp_all [FVarsIn]; exact h.resolve_right (Ne.symm ‹_›)
 
 theorem Closed.abstract1 (h1 : Closed e k) :
     Closed (Expr.abstract1 a e k) (k+1) := by
@@ -143,6 +198,34 @@ theorem Closed.looseBVarRange_le : Closed e k → e.looseBVarRange' ≤ k := by
 
 theorem Closed.looseBVarRange_zero (H : Closed e) : e.looseBVarRange' = 0 := by
   simpa using H.looseBVarRange_le
+
+/-- The converse of `Closed.looseBVarRange_le`, which is how a decidable closedness test is
+cashed in. The metavariable hypothesis is not optional: `looseBVarRange'` returns `0` on
+`.mvar`, while `Closed` rules metavariables out outright. -/
+theorem Closed.of_looseBVarRange : ∀ {e : Expr} {k},
+    e.hasExprMVar' = false → e.looseBVarRange' ≤ k → Closed e k := by
+  intro e
+  induction e <;> intro k hm hb <;>
+    simp_all [Closed, Expr.looseBVarRange', Expr.hasExprMVar', Nat.max_le]; omega
+
+theorem Closed.of_looseBVarRange_zero
+    (hm : e.hasExprMVar' = false) (hb : e.looseBVarRange' = 0) : Closed e :=
+  .of_looseBVarRange hm (Nat.le_of_eq hb)
+
+/-- `FVarsIn` rules out free variables, expression metavariables *and* level metavariables --
+the last in the `sort` and `const` cases -- so all three flags are needed. -/
+theorem FVarsIn.of_hasFVar {P} : ∀ {e : Expr},
+    e.hasFVar' = false → e.hasLevelMVar' = false → e.hasExprMVar' = false → FVarsIn P e := by
+  intro e
+  induction e <;> intro hf hl hm <;>
+    simp_all [FVarsIn, Expr.hasFVar', Expr.hasLevelMVar', Expr.hasExprMVar']
+
+/-- A term that does not contain a variable has its other variables' membership sharpened by
+that fact: this is how a `containsFVar` guard in the checker becomes a statement about the
+context a term lives in. -/
+theorem FVarsIn.of_containsFVar' {P} {fv} : ∀ {e : Expr}, FVarsIn P e →
+    e.containsFVar' fv = false → FVarsIn (fun y => P y ∧ y ≠ fv) e := by
+  intro e; induction e <;> intro h hc <;> simp_all [FVarsIn, Expr.containsFVar']
 
 theorem VLocalDecl.lift'_consN_skipN {d : VLocalDecl} :
     d.lift' (.consN (.skipN .refl n) k) = d.liftN n k := by

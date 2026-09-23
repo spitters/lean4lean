@@ -1,4 +1,5 @@
 import Lean4Lean.Verify.Environment.Checker
+import Lean4Lean.Verify.Typing.PrimSpec
 
 namespace Lean4Lean
 open Lean4Lean
@@ -72,79 +73,6 @@ theorem VEnv.addDefEqs_mono {env₁ env₂ : VEnv} (H : env₁ ≤ env₂) :
     ∀ {cis}, env₁.addDefEqs cis ≤ env₂.addDefEqs cis
   | [] => H
   | _ :: _ => VEnv.addDefEqs_mono (VEnv.addDefEq_mono H)
-
-theorem VEnv.addConst_eq_of_ne
-    {env env' : VEnv}
-    (hadd : env.addConst name ci = some env') (hne : name ≠ n) :
-    env'.constants n = env.constants n := by
-  unfold VEnv.addConst at hadd
-  split at hadd <;> cases hadd
-  simp [hne]
-
-theorem VEnv.HasPrimitives.addConst {env env' : VEnv} (H : env.HasPrimitives)
-    (hname : Environment.primitives.contains name = false)
-    (hadd : env.addConst name ci = some env') : env'.HasPrimitives := by
-  have le := VEnv.addConst_le hadd
-  have same {n} (hp : Environment.primitives.contains n = true) :
-      env'.constants n = env.constants n :=
-    VEnv.addConst_eq_of_ne hadd fun h => by subst h; simp_all
-  have oldContains {n} (hp : Environment.primitives.contains n = true) :
-      env'.contains n → env.contains n := fun ⟨ci, hci⟩ => ⟨ci, (same hp) ▸ hci⟩
-  have newContains {n} : env.contains n → env'.contains n := fun ⟨ci, hci⟩ => ⟨ci, le.constants hci⟩
-  refine let prims := _; have hprims : Environment.primitives = .ofList prims := rfl; ?_
-  replace hprims {n} : n ∈ prims → Environment.primitives.contains n := by
-    simp [hprims, NameSet.contains, NameSet.ofList]
-  simp only [List.mem_cons, prims] at hprims
-  constructor
-  · intro h
-    let ⟨h1, h2⟩ := H.bool (oldContains (hprims (by simp)) h)
-    exact ⟨newContains h1, newContains h2⟩
-  · intro ci h; apply H.boolFalse; rwa [← same (hprims (by simp))]
-  · intro ci h; apply H.boolTrue; rwa [← same (hprims (by simp))]
-  · intro h
-    let ⟨h1, h2⟩ := H.nat (oldContains (hprims (by simp)) h)
-    exact ⟨newContains h1, newContains h2⟩
-  · intro ci h; apply H.natZero; rwa [← same (hprims (by simp))]
-  · intro ci h; apply H.natSucc; rwa [← same (hprims (by simp))]
-  · intro h a b; exact (H.natAdd (oldContains (hprims (by simp)) h) a b).mono le
-  · intro h a b; exact (H.natSub (oldContains (hprims (by simp)) h) a b).mono le
-  · intro h a b; exact (H.natMul (oldContains (hprims (by simp)) h) a b).mono le
-  · intro h a b; exact (H.natPow (oldContains (hprims (by simp)) h) a b).mono le
-  · intro h a b; exact (H.natGcd (oldContains (hprims (by simp)) h) a b).mono le
-  · intro h a b; exact (H.natMod (oldContains (hprims (by simp)) h) a b).mono le
-  · intro h a b; exact (H.natDiv (oldContains (hprims (by simp)) h) a b).mono le
-  · intro h a b; exact (H.natBEq (oldContains (hprims (by simp)) h) a b).mono le
-  · intro h a b; exact (H.natBLE (oldContains (hprims (by simp)) h) a b).mono le
-  · intro h a b; exact (H.natLAnd (oldContains (hprims (by simp)) h) a b).mono le
-  · intro h a b; exact (H.natLOr (oldContains (hprims (by simp)) h) a b).mono le
-  · intro h a b; exact (H.natXor (oldContains (hprims (by simp)) h) a b).mono le
-  · intro h a b; exact (H.natShiftLeft (oldContains (hprims (by simp)) h) a b).mono le
-  · intro h a b; exact (H.natShiftRight (oldContains (hprims (by simp)) h) a b).mono le
-  · intro ci h; apply H.charOfNat; rwa [← same (hprims (by simp))]
-  · intro ci h
-    obtain ⟨rfl, h2, h3⟩ := H.stringOfList (by rwa [← same (hprims (by simp))])
-    exact ⟨rfl, h2.mono le, h3.mono le⟩
-
-theorem VEnv.HasPrimitives.addDefEq {env : VEnv} (H : env.HasPrimitives) :
-    (env.addDefEq df).HasPrimitives :=
-  { H with
-    natAdd h a b := (H.natAdd h a b).mono VEnv.addDefEq_le
-    natSub h a b := (H.natSub h a b).mono VEnv.addDefEq_le
-    natMul h a b := (H.natMul h a b).mono VEnv.addDefEq_le
-    natPow h a b := (H.natPow h a b).mono VEnv.addDefEq_le
-    natGcd h a b := (H.natGcd h a b).mono VEnv.addDefEq_le
-    natMod h a b := (H.natMod h a b).mono VEnv.addDefEq_le
-    natDiv h a b := (H.natDiv h a b).mono VEnv.addDefEq_le
-    natBEq h a b := (H.natBEq h a b).mono VEnv.addDefEq_le
-    natBLE h a b := (H.natBLE h a b).mono VEnv.addDefEq_le
-    natLAnd h a b := (H.natLAnd h a b).mono VEnv.addDefEq_le
-    natLOr h a b := (H.natLOr h a b).mono VEnv.addDefEq_le
-    natXor h a b := (H.natXor h a b).mono VEnv.addDefEq_le
-    natShiftLeft h a b := (H.natShiftLeft h a b).mono VEnv.addDefEq_le
-    natShiftRight h a b := (H.natShiftRight h a b).mono VEnv.addDefEq_le
-    stringOfList h :=
-      let ⟨h1, h2, h3⟩ := H.stringOfList h
-      ⟨h1, h2.mono VEnv.addDefEq_le, h3.mono VEnv.addDefEq_le⟩ }
 
 theorem safePrimitives_add' {env : Environment} (mapWF : env.constants.WF)
     (old : ∀ {n : Name} {ci}, env.find? n = some ci →
