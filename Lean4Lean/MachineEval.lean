@@ -11,11 +11,18 @@ This module gives the checker one rule for reducing `Lean.reduceBool c`, active 
 The rule applies when the constant `c` is a definition without universe parameters whose value
 is, syntactically,
 
-  `CatCrypt.Crypto.SecureCompilation.VerifiedEval.machineAcceptsNat code n regs regions res`
+  `CatCrypt.Crypto.SecureCompilation.VerifiedEval.machineAcceptsNat chunks n regs regions res`
 
-where `code, regs : List Nat` and `regions : List (Nat × List Nat)` are closed chains of
-`List.cons` / `List.nil` / `Prod.mk` (at universe `0` and at the types `Nat`, `List Nat`,
-`Prod Nat (List Nat)`) whose leaves are raw natural-number literals, and `res` is a raw literal.
+where `chunks : List (List Nat)` (the code bytes, in chunks), `regs : List Nat` and
+`regions : List (Nat × List Nat)` are closed chains of `List.cons` / `List.nil` / `Prod.mk` (at
+universe `0` and at the types `Nat`, `List Nat`, `Prod Nat (List Nat)`) whose leaves are raw
+natural-number literals, and `n` (the instruction count) and `res` are raw literals.
+
+The rule returns the processor's answer on the concatenated code bytes. `machineAcceptsNat` is
+`false` when the bytes do not decode into exactly `n` instructions, and the rule does not decode
+them, so the rule agrees with the definition only on byte strings that decode. That condition is
+part of the trusted base: the `verified_decide_lit` tactic emits only bytes whose decoding is
+proved, but the rule does not check it.
 `regs` must have sixteen entries below `2 ^ 64`, `res` must be below `16`, every byte of the code
 and of the regions must be below `256`, and every region base must be below `2 ^ 64`. The
 arguments are decoded by `decodeCall`, which does not reduce anything: any other form,
@@ -94,7 +101,7 @@ def decodeRegion : Expr → Option (Nat × Array Nat)
     else none
   | _ => none
 
-/-- The decoded arguments of `machineAcceptsNat code n regs regions res`. -/
+/-- The decoded arguments of `machineAcceptsNat chunks n regs regions res`. -/
 structure Call where
   code : Array Nat
   n : Nat
@@ -102,12 +109,13 @@ structure Call where
   regions : Array (Nat × Array Nat)
   res : Nat
 
-/-- Decode `machineAcceptsNat code n regs regions res` with literal arguments; `none` on any
+/-- Decode `machineAcceptsNat chunks n regs regions res` with literal arguments; `none` on any
 other expression. -/
 def decodeCall : Expr → Option Call
   | .app (.app (.app (.app (.app (.const f []) code) cnt) regs) regions) res =>
     if f == machineAcceptsNatName then do
-      let code ← decodeList natTy decodeLit code #[]
+      let chunks ← decodeList listNatTy (fun c => decodeList natTy decodeLit c #[]) code #[]
+      let code := chunks.foldl (· ++ ·) #[]
       let n ← decodeLit cnt
       let regs ← decodeList natTy decodeLit regs #[]
       let regions ← decodeList regionTy decodeRegion regions #[]
