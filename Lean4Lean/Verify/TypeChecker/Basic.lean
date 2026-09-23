@@ -196,6 +196,8 @@ structure VContext extends Context where
   mlctx : MLCtx
   mlctx_wf : mlctx.WF venv lparams
   lctx_eq : mlctx.lctx = lctx
+  /-- The verified checker is the one with the machine-evaluation rule off. -/
+  machineEval_off : fuel.machineEval = false
 
 @[simp] abbrev VContext.lctx' (c : VContext) := c.mlctx.lctx
 @[simp] abbrev VContext.vlctx (c : VContext) := c.mlctx.vlctx

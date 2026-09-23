@@ -84,6 +84,10 @@ as it was at the beginning of the file, using the kernel to check them.
 You can also use `lake exe lean4lean --fresh Mathlib.Data.Nat.Basic` to replay all the constants
 (both imported and defined in that file) into a fresh environment,
 but this can only be used on a single file.
+
+With `--machine-eval`, `Lean.reduceBool c` is reduced by running the external runner named by
+the environment variable `CATCRYPT_VRUN` when the value of `c` is an application of
+`machineAcceptsNat` to literal arguments (see `Lean4Lean/MachineEval.lean`).
 -/
 unsafe def main (args : List String) : IO UInt32 := do
   let (flags, args) := args.partition fun s => s.startsWith "-"
@@ -100,6 +104,9 @@ unsafe def main (args : List String) : IO UInt32 := do
       match fuel.applyFlag field value with
       | .ok f => fuel := f
       | .error e => throw <| IO.userError e
+  -- `--machine-eval`: reduce `Lean.reduceBool c` by the rule of `Lean4Lean/MachineEval.lean`.
+  if "--machine-eval" ∈ flags then
+    fuel := { fuel with machineEval := true }
   let readImport : Bool := "--import" ∈ flags
   if readImport then
     if fresh then

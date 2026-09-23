@@ -5,7 +5,7 @@ namespace Lean4Lean
 /--
 Bounds for the various fixed-fuel loops inside the kernel.
 
-Every field is a positive `Nat`; on exhaustion the corresponding loop throws
+Every field except `machineEval` is a positive `Nat`; on exhaustion the corresponding loop throws
 `.deterministicTimeout` (whnf-family) or `.deepRecursion` (structural /
 mutual-recursion loops).
 
@@ -28,4 +28,8 @@ structure FuelConfig where
   recDepth    : Nat := 50000
   /-- Shared fuel for the structural loops in `Inductive/Add.lean`. -/
   inductiveFuel : Nat := 1000
+  /-- Not a fuel bound: enables the machine-evaluation rule of `Lean4Lean/MachineEval.lean` for
+  `Lean.reduceBool` (command-line flag `--machine-eval`). Off by default; `Lean4Lean.Verify`
+  covers the checker with this flag off. -/
+  machineEval : Bool := false
   deriving Repr, Inhabited, Lean.FromJson, Lean.ToJson

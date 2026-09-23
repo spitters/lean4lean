@@ -4,9 +4,10 @@ namespace Lean4Lean.TypeChecker.Inner
 open Lean hiding Environment Exception
 open Kernel
 
-theorem reduceNative.WF :
-    (reduceNative env e).WF fun oe => ∀ e₁, oe = some e₁ → False := by
-  unfold reduceNative; split <;> [skip; exact .pure nofun]
+theorem reduceNative.WF (h : me = false) :
+    (reduceNative env me e).WF fun oe => ∀ e₁, oe = some e₁ → False := by
+  subst h; unfold reduceNative; split <;> [skip; exact .pure nofun]
+  split <;> [(rename_i h; simp at h); skip]
   split <;> [exact .throw; skip]; split <;> [exact .throw; exact .pure nofun]
 
 theorem rawNatLitExt?.WF {c : VContext} (H : rawNatLitExt? e = some n) (he : c.TrExprS e e') :
