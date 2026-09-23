@@ -31,12 +31,70 @@ After `lake build lean4lean`, the executable will be in `.lake/build/bin/lean4le
 
 If you run this as is (with no additional arguments), it will check every olean in the `lean4lean` package itself, which is probably not what you want. To check a different Lean package you should navigate the directory of the target project, then use `lake env path/to/lean4lean/.lake/build/bin/lean4lean <args>` to run `lean4lean` in the context of the target project. The command line arguments are:
 
-> `lean4lean [--fresh] [-v|--verbose] [--compare] [MOD]`
+> `lean4lean [--fresh] [-v|--verbose] [--compare] [--machine-eval] [MOD]`
 
 * `MOD`: an optional lean module name, like `Lean4Lean.Verify`. If provided, the specified module will be checked (single-threaded); otherwise, all modules on the Lean search path will be checked (multithreaded).
 * `--fresh`: Only valid when a `MOD` is provided. In this mode, the module and all its imports will be rebuilt from scratch, checking all dependencies of the module. The behavior without the flag is to only check the module itself, assuming all imports are correct.
 * `--verbose`: shows the name of each declaration before adding it to the environment. Useful to know if the kernel got stuck on something.
 * `--compare`: If lean4lean takes more than a second on a given definition, we also check the C++ kernel performance to see if it is also slow on the same definition and report if lean4lean is abnormally slow in comparison.
+* `--machine-eval`: reduce `Lean.reduceBool` applications of the form described in [Machine evaluation](#machine-evaluation) by running machine code; without the flag they are rejected.
+
+## Verified arithmetic and machine evaluation
+
+This fork adds two things to the checker: verified arithmetic for `Nat` literals, and a
+reduction rule that evaluates a decision procedure by running its machine code.
+
+### Verified `Nat` arithmetic
+
+The kernel reduces a closed `Nat` operation on literals (`Nat.add`, `Nat.mul`, `Nat.pow`,
+`Nat.div`, `Nat.gcd`, the shifts, the bitwise operations, `Nat.beq`, `Nat.ble`: fifteen in
+all) by computing its value. Upstream lean4lean computes it with Lean's `Nat` operations,
+which run GMP. Here each operation is a function `verifiedNat<Op>` whose logical body is the
+`Nat` operation and whose compiled body (`@[implemented_by]`) runs a little-endian base-`2^64`
+limb kernel written in Lean:
+
+* when both operands are below `2^64`, the compiled body is the one-word `Nat` operation;
+* add, sub, mul, pow, the shifts, land, lor, xor, beq and ble run on an `Array UInt64`
+  carrier (`Lean4Lean/VerifiedNatArray.lean`, `VerifiedNatArith.lean`), on limb arrays the
+  checker caches for recently converted literals;
+* div, mod and gcd run on a `List (BitVec 64)` carrier (`Lean4Lean/VerifiedNat.lean`), with
+  Knuth's Algorithm D for multi-limb divisors;
+* `Nat.succ` is `v + 1`.
+
+The `Array UInt64` add, sub, mul, pow, shifts, land, lor and xor carry value theorems
+`toNatA (opA x y) = toNatA x op toNatA y` for all limb arrays, and
+`Lean4Lean/VerifiedNatArrayProofs.lean` proves `verifiedNat<Op>Impl = Nat.<op>` for every
+`Array UInt64` operation and for div and mod by a power of two. [`Demo/VerifiedNat.lean`](Demo/VerifiedNat.lean) states six facts about numbers of up
+to 8192 bits, closed by `decide +kernel`:
+
+```
+lake build Demo lean4lean
+lake env .lake/build/bin/lean4lean Demo.VerifiedNat
+```
+
+[docs/verified-mpn.md](docs/verified-mpn.md) describes the kernels.
+
+### Machine evaluation
+
+With `--machine-eval`, the checker reduces `Lean.reduceBool c` when the value of `c` is an
+application of `machineAcceptsNatD code n h regs regions res` to literals: `code` is x86-64
+machine code as a list of byte chunks, `n` its instruction count, `regs` and `regions` the
+initial registers and memory, `res` the register holding the answer, and `h` a proof that
+`code` decodes to `n` instructions. The checker type-checks `h`, runs the code on the host
+processor through the runner named by the environment variable `CATCRYPT_VRUN`, and reduces
+`Lean.reduceBool c` to the runner's answer. The rule is `Lean4Lean/MachineEval.lean`; the
+runner is [`runner/vrun.c`](runner/vrun.c):
+
+```
+cc -O2 -o runner/vrun runner/vrun.c
+export CATCRYPT_VRUN=$PWD/runner/vrun
+```
+
+The trusted base of a proof checked this way is the checker, the runner and the processor's
+execution of the bytes. The proofs are produced by the `verified_decide_lit` tactic of the
+CatCrypt development, which compiles a decision procedure from a fragment of Lean to
+x86-64 code, proves the compilation correct against a machine model, and emits the
+`machineAcceptsNatD` call.
 
 ## More documentation
 
