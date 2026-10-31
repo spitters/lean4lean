@@ -16,7 +16,7 @@ axiom, and axioms are handled exactly as in upstream lean4lean.
 An axiom is a machine-evaluation claim when its type is `@Eq.{1} Bool lhs Bool.true` and `lhs`
 either has the head constant
 
-  `CatCrypt.Crypto.SecureCompilation.VerifiedEval.machineAcceptsNatD`
+  `VerifiedEval.machineAcceptsNatD`
 
 (the shape `nativeEqTrue` produces) or is a constant without universe parameters that is defined
 as such an application (the shape of a tactic that names the evaluated term by an auxiliary
@@ -78,7 +78,7 @@ open Kernel
 
 /-- The head constant the rule evaluates. -/
 def machineAcceptsNatName : Name :=
-  `CatCrypt.Crypto.SecureCompilation.VerifiedEval.machineAcceptsNatD
+  `VerifiedEval.machineAcceptsNatD
 
 /-- `Nat`. -/
 def natTy : Expr := .const ``Nat []
