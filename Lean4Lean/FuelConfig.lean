@@ -28,8 +28,8 @@ structure FuelConfig where
   recDepth    : Nat := 50000
   /-- Shared fuel for the structural loops in `Inductive/Add.lean`. -/
   inductiveFuel : Nat := 1000
-  /-- Not a fuel bound: enables the machine-evaluation rule of `Lean4Lean/MachineEval.lean` for
-  `Lean.reduceBool` (command-line flag `--machine-eval`). Off by default; `Lean4Lean.Verify`
-  covers the checker with this flag off. -/
+  /-- Not a fuel bound: enables the machine-evaluation rule of `Lean4Lean/MachineEval.lean`,
+  which confirms axioms asserting `machineAcceptsNatD … = true` by running their code (flag
+  `--machine-eval`). Off by default; the type checker does not read it. -/
   machineEval : Bool := false
   deriving Repr, Inhabited, Lean.FromJson, Lean.ToJson

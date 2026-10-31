@@ -1,6 +1,6 @@
 /-
 Copyright (c) 2026 CatCrypt Contributors. All rights reserved.
-Released under MIT license as described in the file LICENSE.
+Released under MIT license as described in the file LICENSE-MIT.
 Authors: CatCrypt Contributors
 -/
 import Lean4Lean.VerifiedNatArith
@@ -15,7 +15,7 @@ LOGICAL body is the same `Nat` operation (so they are equal to it by `rfl`) and
 whose COMPILED body (`@[implemented_by]`) decodes each operand to a little-endian
 base-`2^64` limb list, runs a verified limb kernel, and re-encodes.
 
-The limb kernels are vendored verbatim from the CatCrypt SSProve development
+The limb kernels are vendored verbatim from the CatCrypt compiler (`catcrypt-compiler`)
 (`CatCrypt/Crypto/SecureCompilation/{MultiLimbKernel,BigNat,BigNatKaratsuba,
 BigNatShift,BigNatBitwise}.lean`), where each carries a machine-checked value
 specification against `bignumVal` (the abstraction function `toNat`):

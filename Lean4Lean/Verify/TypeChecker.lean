@@ -63,7 +63,7 @@ theorem RecM.WF.run {x : RecM α} (H : x.WF c s Q) : (RecM.run x).WF c s Q :=
 
 def VContext.mk1 {env : Environment} {safety : DefinitionSafety} {venv : VEnv}
     (wf : VEnvAt env safety venv) (lparams : List Name := [])
-    (fuel : FuelConfig := {}) (hme : fuel.machineEval = false := by rfl) : VContext where
+    (fuel : FuelConfig := {}) : VContext where
   env; safety; lparams; fuel; venv
   hasPrimitives := wf.hasPrimitives
   safePrimitives := wf.safePrimitives
@@ -71,17 +71,14 @@ def VContext.mk1 {env : Environment} {safety : DefinitionSafety} {venv : VEnv}
   mlctx := .nil
   mlctx_wf := trivial
   lctx_eq := rfl
-  machineEval_off := hme
 
 def VContext.mk' {env : Environment} {ves : VEnvs} (wf : ves.WF env)
     (safety : DefinitionSafety := .safe) (lparams : List Name := [])
-    (fuel : FuelConfig := {}) (hme : fuel.machineEval = false := by rfl) : VContext :=
-  .mk1 (wf.toVEnvAt safety) lparams fuel hme
+    (fuel : FuelConfig := {}) : VContext := .mk1 (wf.toVEnvAt safety) lparams fuel
 
 theorem VState.WF.empty1 {env : Environment} {safety : DefinitionSafety} {venv : VEnv}
-    {wf : VEnvAt env safety venv} {lparams : List Name} {fuel : FuelConfig}
-    {hme : fuel.machineEval = false} :
-    VState.WF (.mk1 wf lparams fuel hme) {} where
+    {wf : VEnvAt env safety venv} {lparams : List Name} {fuel : FuelConfig} :
+    VState.WF (.mk1 wf lparams fuel) {} where
   trctx := .nil
   ngen_wf := nofun
   ectx := ⟨[], .refl, trivial, .refl, .empty, nofun⟩
@@ -92,14 +89,12 @@ theorem VState.WF.empty1 {env : Environment} {safety : DefinitionSafety} {venv :
   unfold_wf _ := by simp
 
 theorem VState.WF.empty {env : Environment} {ves : VEnvs} {wf : ves.WF env}
-    {safety : DefinitionSafety} {lparams : List Name} {fuel : FuelConfig}
-    {hme : fuel.machineEval = false} :
-    VState.WF (.mk' wf safety lparams fuel hme) {} := by
+    {safety : DefinitionSafety} {lparams : List Name} {fuel : FuelConfig} :
+    VState.WF (.mk' wf safety lparams fuel) {} := by
   unfold VContext.mk'; exact .empty1
 
 theorem M.WF.run1 {env : Environment} {venv : VEnv} (wf : VEnvAt env safety venv)
-    {hme : fuel.machineEval = false}
-    {x : M α} {Q} (H : x.WF (.mk1 wf lparams fuel hme) {} fun a _ => Q a) :
+    {x : M α} {Q} (H : x.WF (.mk1 wf lparams fuel) {} fun a _ => Q a) :
     (M.run env safety {} lparams fuel x).WF Q := by
   intro a eq
   simp [M.run, Functor.map, Except.map] at eq
@@ -108,8 +103,7 @@ theorem M.WF.run1 {env : Environment} {venv : VEnv} (wf : VEnvAt env safety venv
   exact H
 
 theorem M.WF.run {env : Environment} {ves : VEnvs} (wf : ves.WF env)
-    {hme : fuel.machineEval = false}
-    {x : M α} {Q} (H : x.WF (.mk' wf safety lparams fuel hme) {} fun a _ => Q a) :
+    {x : M α} {Q} (H : x.WF (.mk' wf safety lparams fuel) {} fun a _ => Q a) :
     (M.run env safety {} lparams fuel x).WF Q := by
   unfold VContext.mk' at H; exact M.WF.run1 _ H
 

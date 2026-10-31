@@ -1,53 +1,69 @@
 import Lean
 
 /-!
-# Machine evaluation of `Lean.reduceBool` on one named function
+# Machine evaluation of asserted `machineAcceptsNatD` results
 
-This module gives the checker one rule for reducing `Lean.reduceBool c`, active only when
+In Lean v4.35.0 the kernel has no native reduction (`Lean.reduceBool` and `Lean.reduceNat` are
+removed); a result obtained by native evaluation enters the logic as an axiom `e = true`, which is
+what `Lean.Meta.nativeEqTrue` (the
+basis of `native_decide` and `bv_decide`) adds. The checker, like the kernel, accepts every
+well-typed axiom. This module gives the checker one rule that confirms such an axiom by
+evaluation instead of accepting it as stated. The rule is active only when
 `FuelConfig.machineEval` is set (command-line flag `--machine-eval`, or
-`--config:machineEval=true`). With the flag off, `reduceNative` throws on every
-`Lean.reduceBool c` as before.
+`--config:machineEval=true`); with the flag off, `checkAxiom` succeeds without inspecting the
+axiom, and axioms are handled exactly as in upstream lean4lean.
 
-The rule applies when the constant `c` is a definition without universe parameters whose value
-is, syntactically,
+An axiom is a machine-evaluation claim when its type is `@Eq.{1} Bool lhs Bool.true` and `lhs`
+either has the head constant
 
-  `CatCrypt.Crypto.SecureCompilation.VerifiedEval.machineAcceptsNatD chunks n h regs regions res`
+  `CatCrypt.Crypto.SecureCompilation.VerifiedEval.machineAcceptsNatD`
+
+(the shape `nativeEqTrue` produces) or is a constant without universe parameters that is defined
+as such an application (the shape of a tactic that names the evaluated term by an auxiliary
+definition). `claim?` recognises the two shapes; every other axiom is accepted as upstream
+accepts it. A claim is accepted only when its application has the form
+
+  `machineAcceptsNatD chunks n h regs regions res`
 
 where `chunks : List (List Nat)` (the code bytes, in chunks), `regs : List Nat` and
 `regions : List (Nat × List Nat)` are closed chains of `List.cons` / `List.nil` / `Prod.mk` (at
 universe `0` and at the types `Nat`, `List Nat`, `Prod Nat (List Nat)`) whose leaves are raw
-natural-number literals, `n` (the instruction count) and `res` are raw literals, and `h` is any
-term; the rule does not inspect it.
+natural-number literals, `n` (the instruction count) and `res` are raw literals, `h` is any
+term, which the rule does not inspect, and the machine evaluates the application to `true`.
+A claim of any other form, a failed range check, a runner failure or the answer `false` rejects
+the axiom.
 
-The rule returns the processor's answer on the concatenated code bytes. The definition is `false`
-when the bytes do not decode into exactly `n` instructions; the argument
-`h : codeDecodes chunks n = true` excludes that case. The rule relies on `h` without decoding:
-the application occurs in the value of the definition `c`, which the checker has type-checked
-before `Lean.reduceBool c` is reduced, so `h` is a checked proof of the decoding fact.
+The machine computes the processor's answer on the concatenated code bytes. The definition of
+`machineAcceptsNatD` is `false` when the bytes do not decode into exactly `n` instructions; the
+argument `h : codeDecodes chunks n = true` excludes that case. The rule relies on `h` without
+decoding: the checker type-checks the axiom's type (and, in the second shape, the value of the
+auxiliary definition) before `checkAxiom` runs, so `h` is a checked proof of the decoding fact.
 `regs` must have sixteen entries below `2 ^ 64`, `res` must be below `16`, every byte of the code
 and of the regions must be below `256`, and every region base must be below `2 ^ 64`. The
 arguments are decoded by `decodeCall`, which does not reduce anything: any other form,
-including `OfNat.ofNat` numerals, is rejected and the reduction throws.
+including `OfNat.ofNat` numerals, is rejected.
 
-The decoded arguments are written in the input format of the external runner `vrun` (source
-`CatCrypt/Crypto/SecureCompilation/VerifiedEval/runner/vrun.c` in SSProve-lean): registers in
-the numbering of the Intel SDM (`rax rcx rdx rbx rsp rbp rsi rdi r8 .. r15`), numbers in
-hexadecimal without prefix, byte strings as one token of hexadecimal digit pairs, `-` for an
-empty one. The runner at the path in the environment variable `CATCRYPT_VRUN` is started with
-that text on standard input; exit status `0` with output `1` or `0` reduces the application to
-`Bool.true` or `Bool.false`, and anything else makes the reduction throw.
+The decoded arguments are written in the input format of the external runner `vrun`
+(`runner/vrun.c` in this repository): registers in the numbering of the Intel SDM
+(`rax rcx rdx rbx rsp rbp rsi rdi r8 .. r15`), numbers in hexadecimal without prefix, byte
+strings as one token of hexadecimal digit pairs, `-` for an empty one. The runner at the path in
+the environment variable `CATCRYPT_VRUN` is started with that text on standard input; exit
+status `0` with output `1` accepts the axiom, and anything else rejects it.
 
 ## Trusted base
 
-A proof checked with this rule relies, in addition to the checker, on:
+With the flag set, an accepted machine-evaluation claim relies, in addition to the checker, on:
 
-* the decoder `decodeCall` and the serialiser `vrunInput` of this module;
+* the recogniser `claim?`, the decoder `decodeCall` and the serialiser `vrunInput` of this
+  module;
 * the runner executable named by `CATCRYPT_VRUN`, and the agreement of its execution of the code
   with the definition of `machineAcceptsNatD` on the decoded arguments;
 * the processor that executes the code.
 
-The rule evaluates the one function `machineAcceptsNatD` and no other: `reduceBool` on any other
-constant, and every `reduceNat`, still throws.
+It does not rely on the Lean compiler that produced the axiom. Every other axiom, including a
+`nativeEqTrue` axiom about any other term, is accepted as stated and remains an assumption of
+the proofs that use it. The rule only rejects: with the flag set, an accepted axiom is added to
+the environment exactly as with the flag off.
 
 ## Access to `IO`
 
@@ -175,22 +191,39 @@ external runner through `runRunnerImpl`. -/
 @[implemented_by runRunnerImpl]
 opaque runRunner (input : String) : Except String Bool
 
-/-- The error of the rule on `reduceBool c`. -/
-def failOn {α : Type} (c : Name) (msg : String) : Except Exception α :=
-  throw <| .other s!"lean4lean machine-eval: cannot reduce 'reduceBool {c}': {msg}"
+/-- The left side `lhs` of an axiom type `@Eq.{1} Bool lhs Bool.true`. -/
+def eqTrueLhs? : Expr → Option Expr
+  | .app (.app (.app (.const n ls) ty) lhs) rhs =>
+    if n == ``Eq && ls == [levelOne] && ty == .const ``Bool [] &&
+        rhs == .const ``Bool.true [] then some lhs else none
+  | _ => none
 
-/-- Reduce `Lean.reduceBool c` by running the runner on the decoded value of `c`. Throws, naming
-`c`, when `c` is not a definition whose value `decodeCall` accepts, when the range conditions
-fail, or when the runner fails. -/
-def reduceBoolConst (env : Environment) (c : Name) : Except Exception Expr := do
-  let some (.defnInfo v) := env.find? c | failOn c "not a definition"
-  unless v.levelParams.isEmpty do failOn c "the definition has universe parameters"
-  let some call := decodeCall v.value
-    | failOn c s!"the value is not {machineAcceptsNatName} applied to literal arguments"
-  if let .error m := call.validate then failOn c m
-  match runRunner (vrunInput call) with
-  | .ok true => return .const ``Bool.true []
-  | .ok false => return .const ``Bool.false []
-  | .error m => failOn c m
+/-- The `machineAcceptsNatD` application that an axiom of type `type` asserts to be `true`: the
+left side `lhs` when its head is `machineAcceptsNatD`, or the value of `lhs` when `lhs` is a
+constant without universe parameters defined as such an application. `none` otherwise. -/
+def claim? (env : Environment) (type : Expr) : Option Expr := do
+  let lhs ← eqTrueLhs? type
+  if lhs.isAppOf machineAcceptsNatName then return lhs
+  let .const c [] := lhs | none
+  let some (.defnInfo v) := env.find? c | none
+  if v.levelParams.isEmpty && v.value.isAppOf machineAcceptsNatName then some v.value else none
+
+/-- The error of the rule on the axiom `n`. -/
+def failOn {α : Type} (n : Name) (msg : String) : Except Exception α :=
+  throw <| .other s!"lean4lean machine-eval: rejecting axiom '{n}': {msg}"
+
+/-- Confirm a machine-evaluation claim: succeeds at once when the rule is off or the type of `v`
+is not a claim; otherwise succeeds only when the runner answers `true` on the decoded call. -/
+def checkAxiom : Bool → Environment → AxiomVal → Except Exception Unit
+  | false, _, _ => pure ()
+  | true, env, v => do
+    let some e := claim? env v.type | pure ()
+    let some call := decodeCall e
+      | failOn v.name s!"the asserted term is not {machineAcceptsNatName} applied to literal arguments"
+    if let .error m := call.validate then failOn v.name m
+    match runRunner (vrunInput call) with
+    | .ok true => pure ()
+    | .ok false => failOn v.name "the machine evaluates the asserted term to false"
+    | .error m => failOn v.name m
 
 end Lean4Lean.MachineEval

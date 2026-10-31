@@ -31,6 +31,12 @@ deriving instance ToExpr for Expr
 elab (name := microQq) "q(" e:term ")" : term =>
   return toExpr (← instantiateMVars (← Elab.Term.elabTerm e none))
 
+/-- How a decision procedure `dec : Decidable p` is read off a boolean `b` and evidence
+`H : type p b` relating the two. `Decidable p` is the structure `⟨decide : Bool, reflects_decide :
+decide.Reflects p⟩`, so `toDec p b H` is `Decidable.intro b R` with `R : b.Reflects p` obtained
+from `H` by cases on `b` (the `false` case is `ofFalse`'s argument, the `true` case `ofTrue`'s).
+Since `R` is a proof, `toDec p b H ≡ dec` holds exactly when `dec`'s `decide` field is `b`, and
+`dite p (toDec p b H) t e` reduces, at a literal `b`, to `t` or `e` applied to a proof. -/
 structure Reflection where
   type : Expr
   ofTrue : Expr
@@ -44,7 +50,10 @@ def Reflection.defn₁ : Reflection where
   ofFalse := q(fun p (H : ∀ {q : Prop}, ((false = true → p) → (¬false = true → ¬p) → q) → q) =>
     H fun _ h => h Bool.noConfusion)
   toDec := q(fun p b (H : ∀ {q : Prop}, ((b = true → p) → (¬b = true → ¬p) → q) → q) =>
-    if h : b = true then isTrue (H fun h' _ => h' h) else isFalse (H fun _ h' => h' h))
+    @Decidable.intro p b <| b.casesOn
+      (motive := fun b' => (∀ {q : Prop}, ((b' = true → p) → (¬b' = true → ¬p) → q) → q) →
+        Bool.Reflects b' p)
+      (fun H => H fun _ h' => h' Bool.noConfusion) (fun H => H fun h' _ => h' rfl) H)
 
 def Reflection.defn₂ : Reflection where
   type := q(fun p b => ∀ {q : Prop}, ((b = true → p) → (b = false → ¬p) → q) → q)
@@ -53,8 +62,10 @@ def Reflection.defn₂ : Reflection where
   ofFalse := q(fun p (H : ∀ {q : Prop}, ((false = true → p) → (false = false → ¬p) → q) → q) =>
     H fun _ h => h rfl)
   toDec := q(fun p b (H : ∀ {q : Prop}, ((b = true → p) → (b = false → ¬p) → q) → q) =>
-    b.casesOn (motive := fun b' => b = b' → Decidable p)
-      (fun h => isFalse (H fun _ h' => h' h)) (fun h => isTrue (H fun h' _ => h' h)) rfl)
+    @Decidable.intro p b <| b.casesOn
+      (motive := fun b' => (∀ {q : Prop}, ((b' = true → p) → (b' = false → ¬p) → q) → q) →
+        Bool.Reflects b' p)
+      (fun H => H fun _ h' => h' rfl) (fun H => H fun h' _ => h' rfl) H)
 
 def Reflection.check (r : Reflection) (fail : ∀ {α}, M α) : M Unit := do
   unless ← isDefEq (← checkType r.type) q(Prop → Bool → Prop) do fail
@@ -167,8 +178,19 @@ protected def Condition.dite (cond : Condition) (args: Array Expr) (t e : Expr) 
     (.lam0 (mkAppN cond.prop args) t)
     (.lam0 (mkApp q(Not) (mkAppN cond.prop args)) e)
 
+/-- The boolean a condition's decision procedure computes at `args`: `asBool args` for a
+reflected condition, the scrutinee itself for `bool`. -/
+def ConditionImpl.decide : ConditionImpl → Array Expr → Expr
+  | .bool, args => mkAppN q(fun x : Bool => x) args
+  | .reflectNatNat asBool .., args => mkAppN asBool args
+
+/-- `decide (prop args)` at the instance `dec args`. With `Decidable` the structure
+`⟨decide, reflects_decide⟩` this is the `decide` field, which `Condition.check` pins to
+`asBool args` for a reflected condition (`dec x y ≡ toDec _ (asBool x y) _`); for `bool` it is the
+scrutinee itself (`Bool.decEq x true` decides by `Bool.beq x true ≡ x`). It is not `ite` at
+`Bool`: `Bool.casesOn d false true ≡ d` holds only at a literal `d`. -/
 protected def Condition.decide (cond : Condition) (args : Array Expr) : Expr :=
-  cond.ite q(Bool) args q(true) q(false)
+  cond.impl.decide args
 
 def unfoldWellFounded (e : Expr) (fvs : Array Expr) (eq_def : Expr) (fail : ∀ {α}, M α) :
     M Expr := do

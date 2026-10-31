@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2026 CatCrypt Contributors. All rights reserved.
- * Released under MIT license as described in the file LICENSE.
+ * Released under MIT license as described in the file LICENSE-MIT.
  *
  * vrun: run a block of x86-64 machine code on the host CPU from a given register file
  * and memory image, and print whether a chosen register is nonzero afterwards.

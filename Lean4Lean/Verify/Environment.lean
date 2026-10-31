@@ -156,7 +156,7 @@ theorem addMutual.WF {env : Environment} {ves : VEnvs} (wf : ves.WF env)
     cases v₀.safety with
     | «partial» => exact DefinitionSafety.le_safe
     | _ => exact DefinitionSafety.le_rfl
-  refine (TypeChecker.M.WF.run (hme := rfl) (Q := fun _ =>
+  refine (TypeChecker.M.WF.run (Q := fun _ =>
     (∃ cis, (v₀ :: rest).Forall₂ (fun v ci =>
       TrMutualHeader v₀.safety (ves.venv v₀.safety) env v ci ∧
       v.safety = v₀.safety ∧ v.levelParams = v₀.levelParams) cis) ∧
@@ -189,7 +189,7 @@ theorem addMutual.WF {env : Environment} {ves : VEnvs} (wf : ves.WF env)
   obtain ⟨base, hbase0⟩ := (wf.tr (safety := v₀.safety)).exists_addConsts
     (hpullr hhdr fun _ _ h => h.1.2 ▸ h.2.2.1) (hnameeq ▸ hnd)
   have wfA := VEnvAt.addAxioms hsf (wf.toVEnvAt v₀.safety) hhdr hnd hbase0
-  refine (TypeChecker.M.WF.run1 (hme := rfl) (Q := fun _ => ∃ cis',
+  refine (TypeChecker.M.WF.run1 (Q := fun _ => ∃ cis',
     cis0.Forall₂ (fun (ci ci' : VDefVal) => ci.toVConstVal = ci'.toVConstVal) cis' ∧
     (v₀ :: rest).Forall₂ (fun v ci' => TrExprS base v.levelParams [] v.value ci'.value ∧
       ci'.WF base) cis') wfA ?_).bind fun _ h2 => ?_

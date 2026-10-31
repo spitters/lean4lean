@@ -2,6 +2,7 @@ import Lean4Lean.TypeChecker
 import Lean4Lean.Quot
 import Lean4Lean.Inductive.Add
 import Lean4Lean.Primitive
+import Lean4Lean.MachineEval
 
 namespace Lean4Lean
 open Lean hiding Environment Exception
@@ -31,6 +32,7 @@ def addAxiom (env : Environment) (v : AxiomVal) (check := true) (fuel : FuelConf
   if check then
     _ ← (checkConstantVal env v.toConstantVal).run env
       (safety := if v.isUnsafe then .unsafe else .safe) (lparams := v.levelParams) (fuel := fuel)
+    MachineEval.checkAxiom fuel.machineEval env v
   return env.add (.axiomInfo v)
 
 def addDefinition (env : Environment) (v : DefinitionVal)

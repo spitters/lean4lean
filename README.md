@@ -10,6 +10,13 @@ The project also houses some metatheory regarding the Lean
 system, in the same general direction as the
 [MetaCoq project](https://github.com/MetaCoq/metacoq/).
 
+This repository is a fork of [digama0/lean4lean](https://github.com/digama0/lean4lean) for
+Lean v4.35.0 (with batteries and lean4export at their `v4.35.0` tags). It adds two things to
+the checker, described in [Verified arithmetic and machine evaluation](#verified-arithmetic-and-machine-evaluation):
+`Nat` literal arithmetic computed by limb kernels written in Lean, with value theorems, in
+place of GMP; and an optional rule that confirms an axiom asserting the result of one
+machine-code evaluation by running that code. Everything else follows upstream lean4lean.
+
 ## Building
 
 To compile the code, you will need [Lean](https://lean-lang.org/lean4/doc/quickstart.html), or more specifically `elan`, the Lean version manager, which will make sure you have the right version of lean as specified in the [lean-toolchain](lean-toolchain) file. Assuming you have elan, the project can be compiled with:
@@ -37,12 +44,13 @@ If you run this as is (with no additional arguments), it will check every olean 
 * `--fresh`: Only valid when a `MOD` is provided. In this mode, the module and all its imports will be rebuilt from scratch, checking all dependencies of the module. The behavior without the flag is to only check the module itself, assuming all imports are correct.
 * `--verbose`: shows the name of each declaration before adding it to the environment. Useful to know if the kernel got stuck on something.
 * `--compare`: If lean4lean takes more than a second on a given definition, we also check the C++ kernel performance to see if it is also slow on the same definition and report if lean4lean is abnormally slow in comparison.
-* `--machine-eval`: reduce `Lean.reduceBool` applications of the form described in [Machine evaluation](#machine-evaluation) by running machine code; without the flag they are rejected.
+* `--machine-eval`: accept an axiom of the form described in [Machine evaluation](#machine-evaluation) only when running its machine code returns `true`; without the flag such an axiom is accepted like any other.
+* `--config=FILE`, `--config:FIELD=VALUE`: set the fields of `Lean4Lean.FuelConfig` (the fuel bounds of the checker's loops, and `machineEval`) from a JSON object or one field at a time.
 
 ## Verified arithmetic and machine evaluation
 
 This fork adds two things to the checker: verified arithmetic for `Nat` literals, and a
-reduction rule that evaluates a decision procedure by running its machine code.
+rule that confirms the asserted result of a decision procedure by running its machine code.
 
 ### Verified `Nat` arithmetic
 
@@ -76,37 +84,55 @@ lake env .lake/build/bin/lean4lean Demo.VerifiedNat
 
 ### Machine evaluation
 
-With `--machine-eval`, the checker reduces `Lean.reduceBool c` when the value of `c` is an
-application of `machineAcceptsNatD code n h regs regions res` to literals: `code` is x86-64
+Lean v4.35.0 removed `Lean.reduceBool` and the kernel's native reduction
+([leanprover/lean4#14953](https://github.com/leanprover/lean4/pull/14953)). A result obtained
+by native evaluation now enters the logic as an axiom `e = true`, the form that
+`Lean.Meta.nativeEqTrue` (used by `native_decide` and `bv_decide`) adds, and lean4lean, like
+the kernel, accepts such an axiom as stated.
+
+With `--machine-eval`, the checker confirms one family of these axioms by evaluation. An axiom
+whose type is `lhs = true` at `Bool`, where `lhs` is an application
+`machineAcceptsNatD code n h regs regions res` or a constant defined as one, is accepted only
+when the application has literal arguments and running it returns `true`: `code` is x86-64
 machine code as a list of byte chunks, `n` its instruction count, `regs` and `regions` the
 initial registers and memory, `res` the register holding the answer, and `h` a proof that
-`code` decodes to `n` instructions. The checker type-checks `h`, runs the code on the host
-processor through the runner named by the environment variable `CATCRYPT_VRUN`, and reduces
-`Lean.reduceBool c` to the runner's answer. The rule is `Lean4Lean/MachineEval.lean`; the
-runner is [`runner/vrun.c`](runner/vrun.c):
+`code` decodes to `n` instructions. The checker type-checks the axiom's type, and so `h`, runs
+the code on the host processor through the runner named by the environment variable
+`CATCRYPT_VRUN`, and rejects the axiom unless the runner answers `true`. Every other axiom is
+handled as without the flag. The rule is [`Lean4Lean/MachineEval.lean`](Lean4Lean/MachineEval.lean);
+the runner is [`runner/vrun.c`](runner/vrun.c), for x86-64 Linux:
 
 ```
 cc -O2 -o runner/vrun runner/vrun.c
 export CATCRYPT_VRUN=$PWD/runner/vrun
+lake env .lake/build/bin/lean4lean --machine-eval MOD
 ```
 
-The trusted base of a proof checked this way is the checker, the runner and the processor's
-execution of the bytes. The proofs are produced by the `verified_decide_lit` tactic of the
-CatCrypt development, which compiles a decision procedure from a fragment of Lean to
-x86-64 code, proves the compilation correct against a machine model, and emits the
-`machineAcceptsNatD` call.
+An axiom confirmed this way rests on the checker, the decoding of its arguments in
+`MachineEval.lean`, the runner and the processor's execution of the bytes; it does not rest on
+the Lean compiler that produced it. The rule only rejects: a declaration it accepts is added
+exactly as without the flag. The `machineAcceptsNatD` calls come from the CatCrypt development, which compiles a
+decision procedure from a fragment of Lean to x86-64 code and proves the compilation correct
+against a machine model.
 
 ## More documentation
 
 * [bugs-found.md](bugs-found.md): A list of kernel bugs that the lean4lean project has uncovered.
 * [divergences.md](divergences.md): A list of deliberate divergences between lean's kernel and the lean4lean kernel.
+* [docs/verified-mpn.md](docs/verified-mpn.md): the limb kernels for `Nat` literal arithmetic and their value theorems.
 
 ## (Selected) file breakdown
 
 * `Main.lean`: command line app
+* `Demo/VerifiedNat.lean`: kernel `Nat` arithmetic on multi-limb literals
+* `runner/vrun.c`: the runner of the machine-evaluation rule
 * `Lean4Lean`: source files
   * `Environment.lean`: library entry point
   * `TypeChecker.lean`: main recursive function
+  * `FuelConfig.lean`: fuel bounds of the checker's loops, and the `machineEval` flag
+  * `MachineEval.lean`: the machine-evaluation rule for axioms
+  * `VerifiedNat.lean`, `VerifiedNatArray.lean`, `VerifiedNatArith.lean`: limb kernels for `Nat` literal arithmetic
+  * `VerifiedNatArrayProofs.lean`: value theorems of the `Array UInt64` kernels
   * `Inductive`
     * `Add.lean`: constructing inductive recursors
     * `Reduce.lean`: inductive iota rules

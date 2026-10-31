@@ -1,0 +1,19 @@
+This repository is a fork of lean4lean (https://github.com/digama0/lean4lean), which is
+licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The following files are not part of upstream lean4lean. They are copyright CatCrypt
+Contributors and licensed under the MIT License (see LICENSE-MIT):
+
+  Lean4Lean/VerifiedNat.lean
+  Lean4Lean/VerifiedNatArith.lean
+  Lean4Lean/VerifiedNatArray.lean
+  Lean4Lean/VerifiedNatArrayProofs.lean
+  Lean4Lean/Tests/VerifiedNatArrayTest.lean
+  Demo/VerifiedNat.lean
+  runner/vrun.c
+
+The limb kernels in Lean4Lean/VerifiedNat*.lean are taken from the CatCrypt compiler
+(https://github.com/spitters/catcrypt-compiler), which is licensed under the MIT License.
+
+All other files, including the changes this fork makes to upstream files, are licensed under
+the Apache License, Version 2.0, as upstream lean4lean is.

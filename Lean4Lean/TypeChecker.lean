@@ -6,7 +6,6 @@ import Lean4Lean.Instantiate
 import Lean4Lean.ForEachExprV
 import Lean4Lean.EquivManager
 import Lean4Lean.FuelConfig
-import Lean4Lean.MachineEval
 import Lean4Lean.VerifiedNat
 
 namespace Lean4Lean
@@ -469,19 +468,6 @@ def unfoldDefinition (e : Expr) : RecM (Option Expr) := do
   else
     unfoldDefinitionCore e
 
-/-- `Lean.reduceBool c` and `Lean.reduceNat c` throw, except that with `machineEval` set
-`Lean.reduceBool c` is reduced by `MachineEval.reduceBoolConst`. -/
-def reduceNative (env : Environment) (machineEval : Bool) (e : Expr) :
-    Except Exception (Option Expr) := do
-  let .app f (.const c _) := e | return none
-  if f == .const ``reduceBool [] && machineEval then
-    return some (← MachineEval.reduceBoolConst env c)
-  else if f == .const ``reduceBool [] then
-    throw <| .other s!"lean4lean does not support 'reduceBool {c}' reduction"
-  else if f == .const ``reduceNat [] then
-    throw <| .other s!"lean4lean does not support 'reduceNat {c}' reduction"
-  return none
-
 def rawNatLitExt? (e : Expr) : Option Nat := if e == .natZero then some 0 else e.rawNatLit?
 
 /-- The largest number of entries of `State.natLimbs`. An insertion into a map of
@@ -626,10 +612,7 @@ def whnf' (e : Expr) : RecM Expr := do
   let rec loop t
   | 0 => throw .deterministicTimeout
   | fuel+1 => do
-    let env ← getEnv
-    let ctx ← readThe Context
     let t ← whnfCore' t
-    if let some t ← reduceNative env ctx.fuel.machineEval t then return t
     if let some t ← reduceNat t then return t
     let some t ← unfoldDefinition t | return t
     loop t fuel
@@ -880,12 +863,6 @@ where
         return .bool tn' sn (← isDefEqCore tn' sn)
       else if let some sn' ← reduceNat sn then
         return .bool tn sn' (← isDefEqCore tn sn')
-    let env ← getEnv
-    let ctx ← readThe Context
-    if let some tn' ← reduceNative env ctx.fuel.machineEval tn then
-      return .bool tn' sn (← isDefEqCore tn' sn)
-    else if let some sn' ← reduceNative env ctx.fuel.machineEval sn then
-      return .bool tn sn' (← isDefEqCore tn sn')
     match ← lazyDeltaReductionStep tn sn with
     | .continue tn sn => loop tn sn fuel
     | r => return r
